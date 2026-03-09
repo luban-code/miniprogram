@@ -1,0 +1,2513 @@
+swagger: "2.0"
+info:
+  title: 知识库后端系统 API
+  description: |
+    知识库后端系统 RESTful API 文档
+    
+    **功能模块：**
+    - 用户认证与授权（微信登录、JWT）
+    - 用户与权限管理（RBAC）
+    - 内容管理（模块、文章、课程）
+    - 互动功能（收藏、点赞、评论、学习记录）
+    - 消息通知
+    - 系统管理（日志、配置）
+    
+    **认证方式：**
+    - 前台用户：微信登录获取 JWT Token
+    - 管理员：账号密码登录获取 JWT Token
+    - 所有受保护接口需在 Header 中携带 `Authorization: Bearer {token}`
+  version: "1.0.0"
+  contact:
+    name: API Support
+    
+host: api.example.com
+basePath: /v1
+schemes:
+  - https
+  - http
+
+# 全局安全定义
+securityDefinitions:
+  Bearer:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: "JWT Token，格式：Bearer {token}"
+    
+  # 接口权限要求（通过 x-permission 扩展字段指定）
+  # 例如：x-permission: "article:create"
+
+# 全局参数定义
+parameters:
+  # 分页参数
+  PageParam:
+    name: page
+    in: query
+    type: integer
+    default: 1
+    minimum: 1
+    description: 页码
+    
+  PageSizeParam:
+    name: page_size
+    in: query
+    type: integer
+    default: 20
+    minimum: 1
+    maximum: 100
+    description: 每页数量
+    
+  # 排序参数
+  SortParam:
+    name: sort
+    in: query
+    type: string
+    description: 排序字段，例如：-created_at 表示按创建时间倒序
+    
+  # 搜索参数
+  KeywordParam:
+    name: keyword
+    in: query
+    type: string
+    description: 搜索关键词
+    
+  # ID 参数
+  IdPathParam:
+    name: id
+    in: path
+    required: true
+    type: integer
+    format: int64
+    description: 资源ID
+    
+  # 内容类型参数（用于收藏、点赞、评论等）
+  ContentTypeParam:
+    name: content_type
+    in: path
+    required: true
+    type: integer
+    enum: [1, 2]
+    description: "内容类型：1-文章，2-课程"
+    
+  ContentIdParam:
+    name: content_id
+    in: path
+    required: true
+    type: integer
+    format: int64
+    description: 内容ID
+
+# 全局响应定义
+responses:
+  # 标准成功响应（无数据）
+  Success:
+    description: 操作成功
+    schema:
+      $ref: "#/definitions/ApiResponse"
+      
+  # 创建成功
+  Created:
+    description: 创建成功
+    schema:
+      $ref: "#/definitions/ApiResponse"
+    headers:
+      Location:
+        type: string
+        description: 新创建资源的URL
+        
+  # 无内容（删除成功）
+  NoContent:
+    description: 删除成功，无返回内容
+    
+  # 错误响应
+  BadRequest:
+    description: 请求参数错误
+    schema:
+      $ref: "#/definitions/ErrorResponse"
+      
+  Unauthorized:
+    description: 未授权，Token无效或过期
+    schema:
+      $ref: "#/definitions/ErrorResponse"
+      
+  Forbidden:
+    description: 禁止访问，权限不足
+    schema:
+      $ref: "#/definitions/ErrorResponse"
+      
+  NotFound:
+    description: 资源不存在
+    schema:
+      $ref: "#/definitions/ErrorResponse"
+      
+  Conflict:
+    description: 资源冲突（如重复点赞）
+    schema:
+      $ref: "#/definitions/ErrorResponse"
+      
+  ServerError:
+    description: 服务器内部错误
+    schema:
+      $ref: "#/definitions/ErrorResponse"
+
+# 数据模型定义
+definitions:
+  # ==================== 基础响应模型 ====================
+  
+  ApiResponse:
+    type: object
+    properties:
+      code:
+        type: integer
+        example: 0
+        description: 业务状态码，0表示成功
+      message:
+        type: string
+        example: "success"
+        description: 提示信息
+      data:
+        type: object
+        description: 响应数据
+    required:
+      - code
+      - message
+      
+  ErrorResponse:
+    allOf:
+      - $ref: "#/definitions/ApiResponse"
+      - type: object
+        properties:
+          data:
+            type: object
+            properties:
+              error_code:
+                type: string
+                description: 错误码
+              details:
+                type: array
+                items:
+                  type: string
+                description: 详细错误信息
+                
+  PaginationInfo:
+    type: object
+    properties:
+      total:
+        type: integer
+        description: 总记录数
+      page:
+        type: integer
+        description: 当前页码
+      page_size:
+        type: integer
+        description: 每页数量
+      total_pages:
+        type: integer
+        description: 总页数
+      has_next:
+        type: boolean
+        description: 是否有下一页
+      has_prev:
+        type: boolean
+        description: 是否有上一页
+        
+  PaginatedResponse:
+    allOf:
+      - $ref: "#/definitions/ApiResponse"
+      - type: object
+        properties:
+          data:
+            type: object
+            properties:
+              list:
+                type: array
+                description: 数据列表
+              pagination:
+                $ref: "#/definitions/PaginationInfo"
+
+  # ==================== 用户相关模型 ====================
+  
+  UserBase:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+        example: 10001
+      nickname:
+        type: string
+        example: "张三"
+      avatar_url:
+        type: string
+        example: "https://example.com/avatar.jpg"
+        
+  UserInfo:
+    allOf:
+      - $ref: "#/definitions/UserBase"
+      - type: object
+        properties:
+          openid:
+            type: string
+            description: 微信openid（仅自己或管理员可见）
+          unionid:
+            type: string
+          user_type:
+            type: integer
+            enum: [1, 2, 3]
+            description: "1-前台用户，2-普通管理员，3-系统管理员"
+          status:
+            type: integer
+            enum: [0, 1]
+            description: "0-冻结，1-正常"
+          freeze_end_time:
+            type: string
+            format: date-time
+            description: 冻结结束时间
+          created_at:
+            type: string
+            format: date-time
+          tags:
+            type: array
+            items:
+              $ref: "#/definitions/UserTag"
+              
+  UserTag:
+    type: object
+    properties:
+      id:
+        type: integer
+      tag_name:
+        type: string
+        example: "VIP用户"
+        
+  AdminUserInfo:
+    allOf:
+      - $ref: "#/definitions/UserInfo"
+      - type: object
+        properties:
+          email:
+            type: string
+            format: email
+          last_login_at:
+            type: string
+            format: date-time
+            
+  UserProfileUpdate:
+    type: object
+    properties:
+      nickname:
+        type: string
+        maxLength: 64
+      avatar_url:
+        type: string
+        maxLength: 255
+        
+  # ==================== 认证相关模型 ====================
+  
+  WechatLoginRequest:
+    type: object
+    properties:
+      code:
+        type: string
+        description: 微信登录临时凭证（wx.login获取）
+      encrypted_data:
+        type: string
+        description: 加密数据（可选，用于获取手机号）
+      iv:
+        type: string
+        description: 加密算法的初始向量
+    required:
+      - code
+      
+  AdminLoginRequest:
+    type: object
+    properties:
+      email:
+        type: string
+        format: email
+      password:
+        type: string
+        format: password
+        minLength: 6
+      captcha:
+        type: string
+        description: 图形验证码
+    required:
+      - email
+      - password
+      
+  LoginResponse:
+    allOf:
+      - $ref: "#/definitions/ApiResponse"
+      - type: object
+        properties:
+          data:
+            type: object
+            properties:
+              access_token:
+                type: string
+                example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+              token_type:
+                type: string
+                example: "Bearer"
+              expires_in:
+                type: integer
+                example: 7200
+                description: Token有效期（秒）
+              user_info:
+                $ref: "#/definitions/UserInfo"
+                
+  # ==================== 权限相关模型 ====================
+  
+  Role:
+    type: object
+    properties:
+      id:
+        type: integer
+      name:
+        type: string
+        example: "内容编辑"
+      description:
+        type: string
+      parent_id:
+        type: integer
+        default: 0
+        description: 父角色ID
+      level:
+        type: integer
+        description: 层级
+      is_builtin:
+        type: integer
+        enum: [0, 1]
+        description: 是否内置角色
+      created_at:
+        type: string
+        format: date-time
+        
+  RoleCreate:
+    type: object
+    properties:
+      name:
+        type: string
+        maxLength: 64
+      description:
+        type: string
+        maxLength: 255
+      parent_id:
+        type: integer
+        default: 0
+      permission_ids:
+        type: array
+        items:
+          type: integer
+        description: 关联的权限ID列表
+    required:
+      - name
+      
+  RoleUpdate:
+    allOf:
+      - $ref: "#/definitions/RoleCreate"
+      
+  Permission:
+    type: object
+    properties:
+      id:
+        type: integer
+      name:
+        type: string
+        example: "文章创建"
+      code:
+        type: string
+        example: "article:create"
+      type:
+        type: integer
+        enum: [1, 2, 3]
+        description: "1-菜单，2-按钮，3-接口"
+      parent_id:
+        type: integer
+      level:
+        type: integer
+      is_builtin:
+        type: integer
+        enum: [0, 1]
+        
+  PermissionTree:
+    allOf:
+      - $ref: "#/definitions/Permission"
+      - type: object
+        properties:
+          children:
+            type: array
+            items:
+              $ref: "#/definitions/PermissionTree"
+              
+  # ==================== 内容管理模型 ====================
+  
+  Module:
+    type: object
+    properties:
+      id:
+        type: integer
+      title:
+        type: string
+        example: "前端开发"
+      description:
+        type: string
+      sort_order:
+        type: integer
+        default: 0
+      status:
+        type: integer
+        enum: [0, 1]
+        description: "0-禁用，1-启用"
+      created_at:
+        type: string
+        format: date-time
+        
+  ModuleCreate:
+    type: object
+    properties:
+      title:
+        type: string
+        maxLength: 128
+      description:
+        type: string
+      sort_order:
+        type: integer
+        default: 0
+    required:
+      - title
+      
+  ModulePage:
+    type: object
+    properties:
+      id:
+        type: integer
+      module_id:
+        type: integer
+      title:
+        type: string
+      content:
+        type: string
+        description: 富文本内容
+      content_type:
+        type: integer
+        enum: [1, 2]
+        description: "1-富文本，2-HTML"
+      sort_order:
+        type: integer
+        
+  ModulePageCreate:
+    type: object
+    properties:
+      title:
+        type: string
+        maxLength: 128
+      content:
+        type: string
+      content_type:
+        type: integer
+        default: 1
+      sort_order:
+        type: integer
+        default: 0
+    required:
+      - title
+      
+  # 文章相关
+  ArticleBase:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      title:
+        type: string
+        example: "深入理解React Hooks"
+      summary:
+        type: string
+      cover_image:
+        type: string
+      author:
+        $ref: "#/definitions/UserBase"
+      module_id:
+        type: integer
+      view_count:
+        type: integer
+        default: 0
+      like_count:
+        type: integer
+        default: 0
+      collect_count:
+        type: integer
+        default: 0
+        
+  ArticleListItem:
+    allOf:
+      - $ref: "#/definitions/ArticleBase"
+      - type: object
+        properties:
+          status:
+            type: integer
+            enum: [0, 1, 2]
+            description: "0-草稿，1-已发布，2-定时发布"
+          publish_time:
+            type: string
+            format: date-time
+          created_at:
+            type: string
+            format: date-time
+          is_liked:
+            type: boolean
+            description: 当前用户是否点赞（登录后）
+          is_collected:
+            type: boolean
+            description: 当前用户是否收藏（登录后）
+            
+  ArticleDetail:
+    allOf:
+      - $ref: "#/definitions/ArticleListItem"
+      - type: object
+        properties:
+          content:
+            type: string
+            description: 完整内容
+          content_type:
+            type: integer
+            enum: [1, 2, 3]
+            description: "1-富文本，2-HTML，3-Markdown"
+          permissions:
+            type: array
+            items:
+              $ref: "#/definitions/ContentPermission"
+            description: 查看权限配置
+            
+  ArticleCreate:
+    type: object
+    properties:
+      title:
+        type: string
+        maxLength: 200
+      summary:
+        type: string
+        maxLength: 500
+      content:
+        type: string
+      content_type:
+        type: integer
+        default: 1
+      cover_image:
+        type: string
+        maxLength: 255
+      module_id:
+        type: integer
+      status:
+        type: integer
+        default: 0
+        enum: [0, 1, 2]
+      publish_time:
+        type: string
+        format: date-time
+        description: 定时发布时间（status=2时必填）
+      role_permissions:
+        type: array
+        items:
+          type: integer
+        description: 可查看的角色ID列表，空表示公开
+    required:
+      - title
+      - content
+      
+  ArticleUpdate:
+    allOf:
+      - $ref: "#/definitions/ArticleCreate"
+      
+  # 课程相关
+  CourseBase:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      title:
+        type: string
+        example: "Go语言从入门到精通"
+      description:
+        type: string
+      cover_image:
+        type: string
+      video_url:
+        type: string
+        description: 预览视频或首课视频
+      duration:
+        type: integer
+        description: 总课时（分钟）
+      author:
+        $ref: "#/definitions/UserBase"
+      module_id:
+        type: integer
+      price:
+        type: number
+        format: decimal
+        default: 0.00
+        description: 价格，0表示免费
+      view_count:
+        type: integer
+        default: 0
+      like_count:
+        type: integer
+        default: 0
+      collect_count:
+        type: integer
+        default: 0
+      study_count:
+        type: integer
+        default: 0
+        description: 学习人数
+        
+  CourseListItem:
+    allOf:
+      - $ref: "#/definitions/CourseBase"
+      - type: object
+        properties:
+          status:
+            type: integer
+            enum: [0, 1, 2]
+          publish_time:
+            type: string
+            format: date-time
+          created_at:
+            type: string
+            format: date-time
+          is_liked:
+            type: boolean
+          is_collected:
+            type: boolean
+          progress:
+            type: integer
+            description: 当前用户学习进度（秒），未学习为0
+            
+  CourseDetail:
+    allOf:
+      - $ref: "#/definitions/CourseListItem"
+      - type: object
+        properties:
+          units:
+            type: array
+            items:
+              $ref: "#/definitions/CourseUnit"
+          permissions:
+            type: array
+            items:
+              $ref: "#/definitions/ContentPermission"
+              
+  CourseCreate:
+    type: object
+    properties:
+      title:
+        type: string
+        maxLength: 200
+      description:
+        type: string
+      cover_image:
+        type: string
+      price:
+        type: number
+        default: 0.00
+      module_id:
+        type: integer
+      status:
+        type: integer
+        default: 0
+      publish_time:
+        type: string
+        format: date-time
+      role_permissions:
+        type: array
+        items:
+          type: integer
+    required:
+      - title
+      
+  CourseUpdate:
+    allOf:
+      - $ref: "#/definitions/CourseCreate"
+      
+  CourseUnit:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      course_id:
+        type: integer
+        format: int64
+      title:
+        type: string
+      video_url:
+        type: string
+      duration:
+        type: integer
+        description: 课时（分钟）
+      sort_order:
+        type: integer
+      status:
+        type: integer
+        enum: [0, 1]
+        
+  CourseUnitCreate:
+    type: object
+    properties:
+      title:
+        type: string
+        maxLength: 200
+      video_url:
+        type: string
+        maxLength: 255
+      duration:
+        type: integer
+      sort_order:
+        type: integer
+        default: 0
+    required:
+      - title
+      
+  ContentPermission:
+    type: object
+    properties:
+      id:
+        type: integer
+      content_type:
+        type: integer
+      content_id:
+        type: integer
+        format: int64
+      role_id:
+        type: integer
+        description: null表示公开
+      role_name:
+        type: string
+        
+  # ==================== 互动相关模型 ====================
+  
+  StudyRecord:
+    type: object
+    properties:
+      course_id:
+        type: integer
+        format: int64
+      unit_id:
+        type: integer
+        format: int64
+      progress:
+        type: integer
+        description: 学习进度（秒）
+      status:
+        type: integer
+        enum: [0, 1, 2]
+        description: "0-未开始，1-学习中，2-已完成"
+      last_study_at:
+        type: string
+        format: date-time
+        
+  StudyRecordUpdate:
+    type: object
+    properties:
+      unit_id:
+        type: integer
+        format: int64
+      progress:
+        type: integer
+        description: 当前观看进度（秒）
+      status:
+        type: integer
+        enum: [1, 2]
+    required:
+      - unit_id
+      - progress
+      
+  Collection:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      content_type:
+        type: integer
+        enum: [1, 2]
+      content_id:
+        type: integer
+        format: int64
+      content_title:
+        type: string
+      cover_image:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+        
+  LikeInfo:
+    type: object
+    properties:
+      content_type:
+        type: integer
+      content_id:
+        type: integer
+        format: int64
+      is_liked:
+        type: boolean
+      like_count:
+        type: integer
+        
+  Comment:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      user:
+        $ref: "#/definitions/UserBase"
+      content:
+        type: string
+      parent_id:
+        type: integer
+        format: int64
+        default: 0
+        description: 回复的评论ID
+      status:
+        type: integer
+        enum: [0, 1, 2]
+        description: "0-待审核，1-通过，2-拒绝"
+      created_at:
+        type: string
+        format: date-time
+      replies:
+        type: array
+        items:
+          $ref: "#/definitions/Comment"
+        description: 子评论列表（嵌套）
+        
+  CommentCreate:
+    type: object
+    properties:
+      content:
+        type: string
+        minLength: 1
+        maxLength: 1000
+      parent_id:
+        type: integer
+        format: int64
+        default: 0
+    required:
+      - content
+      
+  # ==================== 消息通知模型 ====================
+  
+  Notification:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      type:
+        type: integer
+        enum: [1, 2, 3]
+        description: "1-系统通知，2-评论回复，3-学习提醒"
+      title:
+        type: string
+      content:
+        type: string
+      is_read:
+        type: boolean
+      created_at:
+        type: string
+        format: date-time
+        
+  # ==================== 系统管理模型 ====================
+  
+  WechatConfig:
+    type: object
+    properties:
+      app_id:
+        type: string
+      api_token:
+        type: string
+      ticket_expires_at:
+        type: string
+        format: date-time
+      token_expires_at:
+        type: string
+        format: date-time
+      status:
+        type: integer
+        
+  WechatConfigUpdate:
+    type: object
+    properties:
+      app_id:
+        type: string
+        maxLength: 32
+      app_secret:
+        type: string
+        maxLength: 64
+      api_token:
+        type: string
+        maxLength: 255
+    required:
+      - app_id
+      - app_secret
+      
+  AuditLog:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      username:
+        type: string
+      action:
+        type: string
+      module:
+        type: string
+      description:
+        type: string
+      ip_address:
+        type: string
+      user_agent:
+        type: string
+      request_data:
+        type: object
+      created_at:
+        type: string
+        format: date-time
+        
+  LogConfig:
+    type: object
+    properties:
+      retention_days:
+        type: integer
+        default: 90
+        description: 日志保留天数
+
+# API 路径定义
+paths:
+  # ==================== 认证模块 ====================
+  
+  /auth/wechat-login:
+    post:
+      tags:
+        - 认证
+      summary: 微信登录（小程序）
+      description: 通过微信临时登录凭证获取JWT Token
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/WechatLoginRequest"
+      responses:
+        200:
+          description: 登录成功
+          schema:
+            $ref: "#/definitions/LoginResponse"
+        400:
+          $ref: "#/responses/BadRequest"
+        401:
+          description: 微信认证失败
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+            
+  /auth/admin-login:
+    post:
+      tags:
+        - 认证
+      summary: 管理员登录
+      description: 邮箱密码登录，需要图形验证码
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/AdminLoginRequest"
+      responses:
+        200:
+          description: 登录成功
+          schema:
+            $ref: "#/definitions/LoginResponse"
+        400:
+          $ref: "#/responses/BadRequest"
+        401:
+          description: 账号或密码错误
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+            
+  /auth/refresh:
+    post:
+      tags:
+        - 认证
+      summary: 刷新Token
+      description: 使用刷新令牌获取新的访问令牌
+      security:
+        - Bearer: []
+      responses:
+        200:
+          description: 刷新成功
+          schema:
+            $ref: "#/definitions/LoginResponse"
+        401:
+          $ref: "#/responses/Unauthorized"
+
+  # ==================== 用户模块 ====================
+  
+  /users/profile:
+    get:
+      tags:
+        - 用户
+      summary: 获取当前用户信息
+      security:
+        - Bearer: []
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/UserInfo"
+                    
+    put:
+      tags:
+        - 用户
+      summary: 更新用户信息
+      security:
+        - Bearer: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/UserProfileUpdate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+        400:
+          $ref: "#/responses/BadRequest"
+          
+  /users/permissions:
+    get:
+      tags:
+        - 用户
+      summary: 获取当前用户权限列表
+      description: 返回当前用户拥有的所有权限编码
+      security:
+        - Bearer: []
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    type: object
+                    properties:
+                      roles:
+                        type: array
+                        items:
+                          type: string
+                      permissions:
+                        type: array
+                        items:
+                          type: string
+                          
+  # 管理员接口 - 用户管理
+  /admin/users:
+    get:
+      tags:
+        - 用户管理
+      summary: 用户列表
+      description: 分页获取用户列表，支持搜索和筛选
+      security:
+        - Bearer: []
+      x-permission: "user:view"
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - $ref: "#/parameters/KeywordParam"
+        - name: user_type
+          in: query
+          type: integer
+          enum: [1, 2, 3]
+        - name: status
+          in: query
+          type: integer
+          enum: [0, 1]
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/UserInfo"
+                          
+    post:
+      tags:
+        - 用户管理
+      summary: 创建管理员账号
+      security:
+        - Bearer: []
+      x-permission: "user:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              email:
+                type: string
+              password:
+                type: string
+                minLength: 6
+              nickname:
+                type: string
+              user_type:
+                type: integer
+                enum: [2, 3]
+            required:
+              - email
+              - password
+      responses:
+        201:
+          $ref: "#/responses/Created"
+        409:
+          description: 邮箱已存在
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+            
+  /admin/users/{id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    get:
+      tags:
+        - 用户管理
+      summary: 用户详情
+      security:
+        - Bearer: []
+      x-permission: "user:view"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/AdminUserInfo"
+        404:
+          $ref: "#/responses/NotFound"
+          
+    put:
+      tags:
+        - 用户管理
+      summary: 更新用户信息
+      security:
+        - Bearer: []
+      x-permission: "user:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              nickname:
+                type: string
+              user_type:
+                type: integer
+              status:
+                type: integer
+              freeze_end_time:
+                type: string
+                format: date-time
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+    delete:
+      tags:
+        - 用户管理
+      summary: 删除用户
+      security:
+        - Bearer: []
+      x-permission: "user:delete"
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+          
+  /admin/users/{id}/roles:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    put:
+      tags:
+        - 用户管理
+      summary: 分配用户角色
+      security:
+        - Bearer: []
+      x-permission: "user:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              role_ids:
+                type: array
+                items:
+                  type: integer
+            required:
+              - role_ids
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+  /admin/users/{id}/tags:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    post:
+      tags:
+        - 用户管理
+      summary: 添加用户标签
+      security:
+        - Bearer: []
+      x-permission: "user:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              tag_name:
+                type: string
+                maxLength: 32
+            required:
+              - tag_name
+      responses:
+        201:
+          $ref: "#/responses/Created"
+          
+    delete:
+      tags:
+        - 用户管理
+      summary: 删除用户标签
+      security:
+        - Bearer: []
+      x-permission: "user:edit"
+      parameters:
+        - name: tag_id
+          in: query
+          required: true
+          type: integer
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+
+  # ==================== 权限管理模块 ====================
+  
+  /admin/roles:
+    get:
+      tags:
+        - 权限管理
+      summary: 角色列表
+      security:
+        - Bearer: []
+      x-permission: "role:view"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/definitions/Role"
+                      
+    post:
+      tags:
+        - 权限管理
+      summary: 创建角色
+      security:
+        - Bearer: []
+      x-permission: "role:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/RoleCreate"
+      responses:
+        201:
+          $ref: "#/responses/Created"
+          
+  /admin/roles/{id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    get:
+      tags:
+        - 权限管理
+      summary: 角色详情（含权限）
+      security:
+        - Bearer: []
+      x-permission: "role:view"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    allOf:
+                      - $ref: "#/definitions/Role"
+                      - properties:
+                          permissions:
+                            type: array
+                            items:
+                              $ref: "#/definitions/Permission"
+                              
+    put:
+      tags:
+        - 权限管理
+      summary: 更新角色
+      security:
+        - Bearer: []
+      x-permission: "role:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/RoleUpdate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+    delete:
+      tags:
+        - 权限管理
+      summary: 删除角色
+      description: 内置角色不可删除
+      security:
+        - Bearer: []
+      x-permission: "role:delete"
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+        403:
+          description: 无法删除内置角色
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+            
+  /admin/permissions:
+    get:
+      tags:
+        - 权限管理
+      summary: 权限树
+      description: 获取所有权限的树形结构
+      security:
+        - Bearer: []
+      x-permission: "permission:view"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/definitions/PermissionTree"
+
+  # ==================== 内容管理 - 模块 ====================
+  
+  /modules:
+    get:
+      tags:
+        - 模块
+      summary: 模块列表
+      parameters:
+        - name: status
+          in: query
+          type: integer
+          enum: [0, 1]
+          description: 不传则返回全部
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/definitions/Module"
+                      
+  /admin/modules:
+    post:
+      tags:
+        - 模块
+      summary: 创建模块
+      security:
+        - Bearer: []
+      x-permission: "module:management"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/ModuleCreate"
+      responses:
+        201:
+          $ref: "#/responses/Created"
+          
+  /admin/modules/{id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    put:
+      tags:
+        - 模块
+      summary: 更新模块
+      security:
+        - Bearer: []
+      x-permission: "module:management"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/ModuleCreate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+    delete:
+      tags:
+        - 模块
+      summary: 删除模块
+      security:
+        - Bearer: []
+      x-permission: "module:management"
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+          
+  /admin/modules/{id}/pages:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    get:
+      tags:
+        - 模块页面
+      summary: 获取模块页面列表
+      security:
+        - Bearer: []
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/definitions/ModulePage"
+                      
+    post:
+      tags:
+        - 模块页面
+      summary: 创建模块页面
+      security:
+        - Bearer: []
+      x-permission: "module:management"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/ModulePageCreate"
+      responses:
+        201:
+          $ref: "#/responses/Created"
+          
+  /admin/modules/{id}/pages/{page_id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      - name: page_id
+        in: path
+        required: true
+        type: integer
+        
+    put:
+      tags:
+        - 模块页面
+      summary: 更新模块页面
+      security:
+        - Bearer: []
+      x-permission: "module:management"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/ModulePageCreate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+    delete:
+      tags:
+        - 模块页面
+      summary: 删除模块页面
+      security:
+        - Bearer: []
+      x-permission: "module:management"
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+
+  # ==================== 内容管理 - 文章 ====================
+  
+  /articles:
+    get:
+      tags:
+        - 文章
+      summary: 文章列表
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - $ref: "#/parameters/KeywordParam"
+        - name: module_id
+          in: query
+          type: integer
+        - name: sort
+          in: query
+          type: string
+          enum: ["-created_at", "created_at", "-view_count", "-like_count"]
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/ArticleListItem"
+                          
+  /articles/{id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    get:
+      tags:
+        - 文章
+      summary: 文章详情
+      description: 自动增加浏览量，返回当前用户是否点赞/收藏
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/ArticleDetail"
+        403:
+          description: 无权限查看
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          $ref: "#/responses/NotFound"
+          
+  /admin/articles:
+    get:
+      tags:
+        - 文章管理
+      summary: 管理端文章列表
+      description: 包含草稿和定时发布文章
+      security:
+        - Bearer: []
+      x-permission: "article:view"
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - $ref: "#/parameters/KeywordParam"
+        - name: status
+          in: query
+          type: integer
+          enum: [0, 1, 2]
+        - name: module_id
+          in: query
+          type: integer
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/ArticleListItem"
+                          
+    post:
+      tags:
+        - 文章管理
+      summary: 创建文章
+      security:
+        - Bearer: []
+      x-permission: "article:create"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/ArticleCreate"
+      responses:
+        201:
+          $ref: "#/responses/Created"
+          
+  /admin/articles/{id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    get:
+      tags:
+        - 文章管理
+      summary: 管理端文章详情
+      security:
+        - Bearer: []
+      x-permission: "article:view"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/ArticleDetail"
+                    
+    put:
+      tags:
+        - 文章管理
+      summary: 更新文章
+      security:
+        - Bearer: []
+      x-permission: "article:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/ArticleUpdate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+    delete:
+      tags:
+        - 文章管理
+      summary: 删除文章
+      security:
+        - Bearer: []
+      x-permission: "article:delete"
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+          
+  /admin/articles/{id}/publish:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    post:
+      tags:
+        - 文章管理
+      summary: 发布/取消发布文章
+      security:
+        - Bearer: []
+      x-permission: "article:publish"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              status:
+                type: integer
+                enum: [0, 1]
+                description: "1-发布，0-转为草稿"
+            required:
+              - status
+      responses:
+        200:
+          $ref: "#/responses/Success"
+
+  # ==================== 内容管理 - 课程 ====================
+  
+  /courses:
+    get:
+      tags:
+        - 课程
+      summary: 课程列表
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - $ref: "#/parameters/KeywordParam"
+        - name: module_id
+          in: query
+          type: integer
+        - name: is_free
+          in: query
+          type: boolean
+          description: 是否只显示免费课程
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/CourseListItem"
+                          
+  /courses/{id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    get:
+      tags:
+        - 课程
+      summary: 课程详情
+      description: 包含课程单元列表和学习进度
+      security:
+        - Bearer: []
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/CourseDetail"
+        403:
+          description: 无权限查看或需要购买
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+            
+  /admin/courses:
+    get:
+      tags:
+        - 课程管理
+      summary: 管理端课程列表
+      security:
+        - Bearer: []
+      x-permission: "course:view"
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - name: status
+          in: query
+          type: integer
+          enum: [0, 1, 2]
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/CourseListItem"
+                          
+    post:
+      tags:
+        - 课程管理
+      summary: 创建课程
+      security:
+        - Bearer: []
+      x-permission: "course:create"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/CourseCreate"
+      responses:
+        201:
+          $ref: "#/responses/Created"
+          
+  /admin/courses/{id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    get:
+      tags:
+        - 课程管理
+      summary: 管理端课程详情
+      security:
+        - Bearer: []
+      x-permission: "course:view"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/CourseDetail"
+                    
+    put:
+      tags:
+        - 课程管理
+      summary: 更新课程
+      security:
+        - Bearer: []
+      x-permission: "course:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/CourseUpdate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+    delete:
+      tags:
+        - 课程管理
+      summary: 删除课程
+      security:
+        - Bearer: []
+      x-permission: "course:delete"
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+          
+  /admin/courses/{id}/units:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    get:
+      tags:
+        - 课程单元
+      summary: 获取课程单元列表
+      security:
+        - Bearer: []
+      x-permission: "course:view"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/definitions/CourseUnit"
+                      
+    post:
+      tags:
+        - 课程单元
+      summary: 添加课程单元
+      security:
+        - Bearer: []
+      x-permission: "course:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/CourseUnitCreate"
+      responses:
+        201:
+          $ref: "#/responses/Created"
+          
+  /admin/courses/{id}/units/{unit_id}:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      - name: unit_id
+        in: path
+        required: true
+        type: integer
+        format: int64
+        
+    put:
+      tags:
+        - 课程单元
+      summary: 更新课程单元
+      security:
+        - Bearer: []
+      x-permission: "course:edit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/CourseUnitCreate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+    delete:
+      tags:
+        - 课程单元
+      summary: 删除课程单元
+      security:
+        - Bearer: []
+      x-permission: "course:edit"
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+
+  # ==================== 互动功能 ====================
+  
+  /study-records:
+    get:
+      tags:
+        - 学习记录
+      summary: 我的学习记录
+      security:
+        - Bearer: []
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/StudyRecord"
+                        
+    post:
+      tags:
+        - 学习记录
+      summary: 更新学习进度
+      security:
+        - Bearer: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/StudyRecordUpdate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+  /collections:
+    get:
+      tags:
+        - 收藏
+      summary: 我的收藏列表
+      security:
+        - Bearer: []
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - name: content_type
+          in: query
+          type: integer
+          enum: [1, 2]
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/Collection"
+                          
+  /collections/{content_type}/{content_id}:
+    parameters:
+      - $ref: "#/parameters/ContentTypeParam"
+      - $ref: "#/parameters/ContentIdParam"
+      
+    post:
+      tags:
+        - 收藏
+      summary: 添加收藏
+      security:
+        - Bearer: []
+      responses:
+        201:
+          $ref: "#/responses/Created"
+        409:
+          description: 已收藏
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+            
+    delete:
+      tags:
+        - 收藏
+      summary: 取消收藏
+      security:
+        - Bearer: []
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+          
+  /likes/{content_type}/{content_id}:
+    parameters:
+      - $ref: "#/parameters/ContentTypeParam"
+      - $ref: "#/parameters/ContentIdParam"
+      
+    post:
+      tags:
+        - 点赞
+      summary: 点赞
+      security:
+        - Bearer: []
+      responses:
+        201:
+          description: 点赞成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/LikeInfo"
+        409:
+          description: 已点赞
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+            
+    delete:
+      tags:
+        - 点赞
+      summary: 取消点赞
+      security:
+        - Bearer: []
+      responses:
+        200:
+          description: 取消成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/LikeInfo"
+                    
+  /comments/{content_type}/{content_id}:
+    parameters:
+      - $ref: "#/parameters/ContentTypeParam"
+      - $ref: "#/parameters/ContentIdParam"
+      
+    get:
+      tags:
+        - 评论
+      summary: 获取评论列表
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/Comment"
+                          
+    post:
+      tags:
+        - 评论
+      summary: 发表评论
+      security:
+        - Bearer: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/CommentCreate"
+      responses:
+        201:
+          description: 发表成功（可能需要审核）
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/Comment"
+                    
+  /admin/comments:
+    get:
+      tags:
+        - 评论审核
+      summary: 评论列表（管理端）
+      description: 包含待审核评论
+      security:
+        - Bearer: []
+      x-permission: "comment:view"
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - name: status
+          in: query
+          type: integer
+          enum: [0, 1, 2]
+          default: 0
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/Comment"
+                          
+  /admin/comments/{id}/audit:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    put:
+      tags:
+        - 评论审核
+      summary: 审核评论
+      security:
+        - Bearer: []
+      x-permission: "comment:audit"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              status:
+                type: integer
+                enum: [1, 2]
+                description: "1-通过，2-拒绝"
+            required:
+              - status
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+    delete:
+      tags:
+        - 评论审核
+      summary: 删除评论
+      security:
+        - Bearer: []
+      x-permission: "comment:delete"
+      responses:
+        204:
+          $ref: "#/responses/NoContent"
+
+  # ==================== 消息通知 ====================
+  
+  /notifications:
+    get:
+      tags:
+        - 消息通知
+      summary: 消息列表
+      security:
+        - Bearer: []
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - name: is_read
+          in: query
+          type: boolean
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/Notification"
+                      unread_count:
+                        type: integer
+                        description: 未读消息总数
+                        
+  /notifications/{id}/read:
+    parameters:
+      - $ref: "#/parameters/IdPathParam"
+      
+    put:
+      tags:
+        - 消息通知
+      summary: 标记已读
+      security:
+        - Bearer: []
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+  /notifications/read-all:
+    put:
+      tags:
+        - 消息通知
+      summary: 全部标记已读
+      security:
+        - Bearer: []
+      responses:
+        200:
+          $ref: "#/responses/Success"
+
+  # ==================== 系统管理 ====================
+  
+  /admin/wechat-config:
+    get:
+      tags:
+        - 系统配置
+      summary: 获取微信配置
+      security:
+        - Bearer: []
+      x-permission: "wechat:config"
+      responses:
+        200:
+          description: 成功（敏感字段脱敏）
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/WechatConfig"
+                    
+    put:
+      tags:
+        - 系统配置
+      summary: 更新微信配置
+      security:
+        - Bearer: []
+      x-permission: "wechat:config"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/WechatConfigUpdate"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+          
+  /admin/audit-logs:
+    get:
+      tags:
+        - 审计日志
+      summary: 审计日志列表
+      security:
+        - Bearer: []
+      x-permission: "log:view"
+      parameters:
+        - $ref: "#/parameters/PageParam"
+        - $ref: "#/parameters/PageSizeParam"
+        - name: module
+          in: query
+          type: string
+        - name: action
+          in: query
+          type: string
+        - name: start_time
+          in: query
+          type: string
+          format: date-time
+        - name: end_time
+          in: query
+          type: string
+          format: date-time
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/PaginatedResponse"
+              - properties:
+                  data:
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/definitions/AuditLog"
+                          
+  /admin/log-config:
+    get:
+      tags:
+        - 日志配置
+      summary: 获取日志配置
+      security:
+        - Bearer: []
+      x-permission: "log:config"
+      responses:
+        200:
+          description: 成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    $ref: "#/definitions/LogConfig"
+                    
+    put:
+      tags:
+        - 日志配置
+      summary: 更新日志配置
+      security:
+        - Bearer: []
+      x-permission: "log:config"
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: "#/definitions/LogConfig"
+      responses:
+        200:
+          $ref: "#/responses/Success"
+
+  # ==================== 文件上传 ====================
+  
+  /upload/image:
+    post:
+      tags:
+        - 文件上传
+      summary: 上传图片
+      description: 支持jpg、png、gif，最大5MB
+      security:
+        - Bearer: []
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          type: file
+          required: true
+          description: 图片文件
+        - name: type
+          in: formData
+          type: string
+          enum: ["avatar", "article", "course", "cover"]
+          default: "article"
+          description: 图片用途，影响存储路径和压缩策略
+      responses:
+        200:
+          description: 上传成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    type: object
+                    properties:
+                      url:
+                        type: string
+                        description: 图片访问URL
+                      key:
+                        type: string
+                        description: 存储Key
+                        
+  /upload/video:
+    post:
+      tags:
+        - 文件上传
+      summary: 上传视频
+      description: 支持mp4，最大500MB，建议先获取预签名URL后直传对象存储
+      security:
+        - Bearer: []
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          type: file
+          required: true
+      responses:
+        200:
+          description: 上传成功
+          schema:
+            allOf:
+              - $ref: "#/definitions/ApiResponse"
+              - properties:
+                  data:
+                    type: object
+                    properties:
+                      url:
+                        type: string
+                      duration:
+                        type: integer
+                        description: 视频时长（秒）
+                      cover_url:
+                        type: string
+                        description: 自动生成的封面图
+
+# 扩展字段说明（x- 字段）
+# x-permission: 接口所需的权限编码，用于前端权限控制和后端拦截器
