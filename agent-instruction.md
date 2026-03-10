@@ -28,6 +28,8 @@ project/
 │   │   └── dto/                # Request/Response 结构体
 │   ├── middleware/             # Gin 中间件
 │   └── pkg/                    # 内部工具包
+│       ├── errors/             # 统一错误处理（新增）
+│       └── response/           # 响应封装
 ├── api/swagger.yaml            # OpenAPI 2.0 规范（唯一真相源）
 ├── migrations/                 # SQL 迁移文件（直接放这里）
 │   ├── 000001_init_schema.up.sql
@@ -51,28 +53,49 @@ project/
 ## 编码规范
 
 ### 1. Controller 层
-- 仅处理：参数绑定 → 调用 Service → 返回响应
+- 仅处理：参数绑定 → 调用 Service → 返回响应（或返回错误）
 - 禁止：直接操作 DB、业务逻辑、外部调用
-- 必须：使用统一的 response 包返回 JSON
+- **必须：返回 error，由 ErrorMiddleware 统一处理响应**
 - 每个 Handler 上方必须添加 Swagger 注释
 
 func (c *UserController) GetUser(ctx *gin.Context) {
     id := ctx.Param("id")
     user, err := c.service.GetByID(ctx, id)
     if err != nil {
-        response.Error(ctx, http.StatusInternalServerError, "查询失败", err)
+        ctx.Error(err)  // 交给 ErrorMiddleware 处理
         return
     }
     response.Success(ctx, user)
+}
+
+func (c *UserController) CreateUser(ctx *gin.Context) {
+    var req dto.CreateUserRequest
+    if err := ctx.ShouldBindJSON(&req); err != nil {
+        ctx.Error(errors.NewBadRequest("参数绑定失败", err))
+        return
+    }
+    if err := req.Validate(); err != nil {
+        ctx.Error(errors.NewValidation("参数校验失败", err))
+        return
+    }
+    
+    user, err := c.service.Create(ctx, &req)
+    if err != nil {
+        ctx.Error(err)
+        return
+    }
+    response.Success(ctx, http.StatusCreated, user)
 }
 
 ### 2. Service 层
 - 必须定义接口，方便 Mock 测试
 - 处理业务规则、事务协调
 - 禁止：直接操作 SQL，必须通过 Repository
+- **返回：使用 errors.NewXxx() 包装 domain error**
 
 type UserService interface {
     GetByID(ctx context.Context, id string) (*model.User, error)
+    Create(ctx context.Context, req *dto.CreateUserRequest) (*model.User, error)
 }
 
 type userService struct {
@@ -80,10 +103,22 @@ type userService struct {
     log  *logrus.Logger
 }
 
+func (s *userService) GetByID(ctx context.Context, id string) (*model.User, error) {
+    user, err := s.repo.GetByID(ctx, id)
+    if err != nil {
+        return nil, errors.NewInternal("数据库查询失败", err)
+    }
+    if user == nil {
+        return nil, errors.NewNotFound("用户不存在", nil)
+    }
+    return user, nil
+}
+
 ### 3. Repository 层
 - 必须定义接口
 - 仅处理单表 CRUD，复杂查询用 Gorm Scopes
 - 返回：(*Model, error)，查不到返回 (nil, nil) 而非 error
+- **禁止返回具体错误类型，统一返回 errors.NewInternal()**
 
 type UserRepository interface {
     GetByID(ctx context.Context, id uint) (*model.User, error)
@@ -128,12 +163,128 @@ func (r CreateUserRequest) Validate() error {
 // Controller 中使用
 var req CreateUserRequest
 if err := ctx.ShouldBindJSON(&req); err != nil {
-    response.Error(ctx, http.StatusBadRequest, "参数绑定失败", err)
+    ctx.Error(errors.NewBadRequest("参数绑定失败", err))
     return
 }
 if err := req.Validate(); err != nil {
-    response.Error(ctx, http.StatusBadRequest, "参数校验失败", err)
+    ctx.Error(errors.NewValidation("参数校验失败", err))
     return
+}
+
+### 6. 统一错误处理（errors 包）
+
+#### 错误结构体定义
+package errors
+
+type AppError struct {
+    Code    int    `json:"code"`     // 业务错误码
+    Message string `json:"message"`  // 用户可读消息
+    HTTPCode int   `json:"-"`        // HTTP 状态码（不序列化）
+    Cause   error  `json:"-"`        // 原始错误（日志用，不暴露）
+}
+
+func (e *AppError) Error() string {
+    return e.Message
+}
+
+// 预定义错误类型
+func NewBadRequest(message string, cause error) *AppError {
+    return &AppError{Code: 400001, Message: message, HTTPCode: 400, Cause: cause}
+}
+
+func NewValidation(message string, cause error) *AppError {
+    return &AppError{Code: 400002, Message: message, HTTPCode: 400, Cause: cause}
+}
+
+func NewUnauthorized(message string, cause error) *AppError {
+    return &AppError{Code: 401001, Message: message, HTTPCode: 401, Cause: cause}
+}
+
+func NewForbidden(message string, cause error) *AppError {
+    return &AppError{Code: 403001, Message: message, HTTPCode: 403, Cause: cause}
+}
+
+func NewNotFound(message string, cause error) *AppError {
+    return &AppError{Code: 404001, Message: message, HTTPCode: 404, Cause: cause}
+}
+
+func NewInternal(message string, cause error) *AppError {
+    return &AppError{Code: 500001, Message: message, HTTPCode: 500, Cause: cause}
+}
+
+// 错误转换工具
+func ToResponse(err error) (int, map[string]interface{}) {
+    if appErr, ok := err.(*AppError); ok {
+        return appErr.HTTPCode, map[string]interface{}{
+            "code":    appErr.Code,
+            "message": appErr.Message,
+            "data":    nil,
+        }
+    }
+    // 未知错误类型，统一包装为 500
+    return http.StatusInternalServerError, map[string]interface{}{
+        "code":    500000,
+        "message": "服务器内部错误",
+        "data":    nil,
+    }
+}
+
+#### ErrorMiddleware 实现
+package middleware
+
+import (
+    "github.com/gin-gonic/gin"
+    "project/internal/pkg/errors"
+    "github.com/sirupsen/logrus"
+)
+
+func ErrorMiddleware(log *logrus.Logger) gin.HandlerFunc {
+    return func(ctx *gin.Context) {
+        ctx.Next() // 先执行后续 handler
+        
+        // 检查是否有错误
+        if len(ctx.Errors) > 0 {
+            err := ctx.Errors.Last().Err
+            
+            // 记录日志（包含原始错误）
+            if appErr, ok := err.(*errors.AppError); ok && appErr.Cause != nil {
+                log.WithError(appErr.Cause).WithField("code", appErr.Code).Error(appErr.Message)
+            } else {
+                log.WithError(err).Error("request error")
+            }
+            
+            // 统一转换为 response
+            httpCode, resp := errors.ToResponse(err)
+            ctx.JSON(httpCode, resp)
+            ctx.Abort()
+        }
+    }
+}
+
+#### response 包更新
+package response
+
+import (
+    "net/http"
+    "github.com/gin-gonic/gin"
+)
+
+// Success 统一成功响应
+func Success(ctx *gin.Context, data interface{}) {
+    ctx.JSON(http.StatusOK, gin.H{
+        "code":    0,
+        "message": "success",
+        "data":    data,
+    })
+}
+
+// SuccessWithStatus 指定状态码的成功响应
+func SuccessWithStatus(ctx *gin.Context, status int, data interface{}) {
+    ctx.JSON(status, gin.H{
+        "code":    0,
+        "message": "success",
+        "data":    data,
+    })
 }
 
 ## 测试规范（Ginkgo + mockery）
@@ -176,6 +327,7 @@ import (
 
     "project/internal/model"
     "project/internal/service"
+    "project/internal/pkg/errors"
     "project/mocks"
 )
 
@@ -208,36 +360,27 @@ var _ = Describe("UserService", func() {
         })
 
         Context("当用户不存在时", func() {
-            It("应返回 nil 且无错误", func() {
+            It("应返回 NotFound 错误", func() {
                 mockRepo.On("GetByID", ctx, uint(999)).Return(nil, nil)
 
                 user, err := svc.GetByID(ctx, "999")
 
-                Expect(err).To(BeNil())
+                Expect(err).To(HaveOccurred())
+                Expect(err.(*errors.AppError).Code).To(Equal(404001))
                 Expect(user).To(BeNil())
             })
         })
 
         Context("当数据库出错时", func() {
-            It("应返回错误", func() {
+            It("应返回 Internal 错误", func() {
                 mockRepo.On("GetByID", ctx, uint(1)).Return(nil, errors.New("db error"))
 
                 user, err := svc.GetByID(ctx, "1")
 
                 Expect(err).To(HaveOccurred())
+                Expect(err.(*errors.AppError).HTTPCode).To(Equal(500))
                 Expect(user).To(BeNil())
             })
-        })
-    })
-
-    Describe("Create", func() {
-        It("应成功创建用户", func() {
-            user := &model.User{Nickname: "new", Email: "test@example.com"}
-            mockRepo.On("Create", ctx, user).Return(nil)
-
-            err := svc.Create(ctx, user)
-
-            Expect(err).To(BeNil())
         })
     })
 })
@@ -257,6 +400,7 @@ import (
     "github.com/sirupsen/logrus"
 
     "project/internal/controller"
+    "project/internal/middleware"
     "project/mocks"
 )
 
@@ -273,13 +417,15 @@ var _ = Describe("UserController", func() {
         mockSvc = new(mocks.UserService)
         ctrl = controller.NewUserController(mockSvc, logrus.New())
         router = gin.New()
+        // 注册 ErrorMiddleware 用于测试
+        router.Use(middleware.ErrorMiddleware(logrus.New()))
         rec = httptest.NewRecorder()
     })
 
     Describe("POST /users", func() {
         Context("当参数有效时", func() {
             It("应创建用户并返回 201", func() {
-                mockSvc.On("Create", mock.Anything, mock.Anything).Return(nil)
+                mockSvc.On("Create", mock.Anything, mock.Anything).Return(&model.User{ID: 1}, nil)
 
                 body, _ := json.Marshal(map[string]string{
                     "nickname": "test",
@@ -288,7 +434,7 @@ var _ = Describe("UserController", func() {
                 req, _ := http.NewRequest("POST", "/users", bytes.NewBuffer(body))
                 req.Header.Set("Content-Type", "application/json")
 
-                router.POST("/users", ctrl.Create)
+                router.POST("/users", ctrl.CreateUser)
                 router.ServeHTTP(rec, req)
 
                 Expect(rec.Code).To(Equal(http.StatusCreated))
@@ -296,17 +442,21 @@ var _ = Describe("UserController", func() {
         })
 
         Context("当参数校验失败时", func() {
-            It("应返回 400", func() {
+            It("应返回 400 和错误码", func() {
                 body, _ := json.Marshal(map[string]string{
                     "nickname": "",
                 })
                 req, _ := http.NewRequest("POST", "/users", bytes.NewBuffer(body))
                 req.Header.Set("Content-Type", "application/json")
 
-                router.POST("/users", ctrl.Create)
+                router.POST("/users", ctrl.CreateUser)
                 router.ServeHTTP(rec, req)
 
                 Expect(rec.Code).To(Equal(http.StatusBadRequest))
+                // 验证错误码格式
+                var resp map[string]interface{}
+                json.Unmarshal(rec.Body.Bytes(), &resp)
+                Expect(resp["code"]).To(BeNumerically(">=", 400000))
             })
         })
     })
@@ -523,6 +673,7 @@ task docker-compose-down  # 停止环境
 - 禁止：使用 fmt.Println，必须用 log.WithField().Info()
 
 ## 中间件（必须实现）
+- **ErrorMiddleware：统一错误转换（必须在其他中间件之前注册）**
 - LoggerMiddleware：请求日志（含耗时、状态码）
 - RecoveryMiddleware：panic 恢复
 - JWTAuthMiddleware：JWT 校验
@@ -536,15 +687,18 @@ task docker-compose-down  # 停止环境
 - 索引命名：idx_table_column
 - 所有表必须有：id, created_at, updated_at, deleted_at
 
-## 错误处理
-- 统一错误包：internal/pkg/errors
-- 错误码规范：
-  - 400: 参数错误
-  - 401: 未认证
-  - 403: 无权限
-  - 404: 资源不存在
-  - 500: 服务器错误
-- 返回格式：{"code": 500, "message": "错误描述", "data": null}
+## 错误处理（统一错误体系）
+- **统一错误包：internal/pkg/errors（必须按此规范实现）**
+- **错误结构：{code, message, http_code}，其中 code 为业务码，http_code 为 HTTP 状态码**
+- **错误传递：Controller/Service/Repository 统一返回 error，由 ErrorMiddleware 统一转换**
+- **错误码规范：**
+  - 400xxx: 参数错误（400001=通用参数错误，400002=校验失败）
+  - 401xxx: 未认证（401001=Token无效）
+  - 403xxx: 无权限（403001=禁止访问）
+  - 404xxx: 资源不存在（404001=记录不存在）
+  - 500xxx: 服务器错误（500001=内部错误）
+- **错误创建：使用 errors.NewXxx() 系列函数，禁止直接构造 AppError**
+- **错误响应：统一格式 {"code": 400001, "message": "错误描述", "data": null}**
 
 ## 微信小程序特定
 - 登录流程：前端 code → 后端调微信 auth.code2Session → 返回自定义 token
@@ -553,11 +707,12 @@ task docker-compose-down  # 停止环境
 
 ## 禁止事项
 - 禁止在 Controller 写业务逻辑
-- 禁止 Repository 返回具体错误（包装为 domain error）
+- **禁止 Repository/Service 返回具体错误类型（必须包装为 *errors.AppError）**
 - 禁止在代码中硬编码配置（必须用 Viper）
 - 禁止直接 import 外部包到 Controller/Service（通过接口解耦）
 - 禁止修改已发布的 Migration 文件（只能新增）
 - 禁止在 Controller 直接使用 gin 的 binding 验证器（必须用 ozzo-validation）
+- **禁止在 Controller 中直接调用 response.Error()（必须 ctx.Error() 抛出）**
 - 禁止在单元测试中连接真实数据库（必须用 mock）
 - 禁止在测试中使用 testify/suite（必须用 Ginkgo）
 - 禁止单阶段 Dockerfile（必须用多阶段构建）
@@ -579,12 +734,12 @@ task docker-compose-down  # 停止环境
 1. 在 api/swagger.yaml 添加 /users 的 CRUD 接口定义
 2. 生成对应的 DTO 结构体（实现 ozzo-validation 的 Validate 方法）
 3. 创建 UserRepository 接口和实现（Gorm）
-4. 创建 UserService 接口和实现，编写业务逻辑
-5. 创建 UserController 绑定路由（调用 DTO.Validate()）
+4. 创建 UserService 接口和实现，使用 errors.NewInternal/NewNotFound 包装错误
+5. 创建 UserController 绑定路由，使用 ctx.Error() 传递错误
 6. 创建 000002_add_users_table 迁移文件（放在 migrations/ 根目录）
 7. 运行 task mock-generate 生成 mock
-8. 创建 service/user_service_test.go 编写 Ginkgo BDD 测试（覆盖正常/异常场景）
-9. 创建 controller/user_controller_test.go 编写 HTTP 层测试
+8. 创建 service/user_service_test.go 编写 Ginkgo BDD 测试（验证错误类型）
+9. 创建 controller/user_controller_test.go 编写 HTTP 层测试（验证错误码）
 10. 验证 task docker-build 成功构建多阶段镜像
 11. 验证 task docker-compose-up 能自动执行迁移并启动服务
 
@@ -593,6 +748,7 @@ task docker-compose-down  # 停止环境
 - 所有外部调用（微信、OSS）必须封装在 pkg/ 下
 - 所有请求参数必须通过 ozzo-validation 校验
 - 所有接口必须定义在 Service/Repository 层用于 mock
+- **所有错误统一使用 internal/pkg/errors 包创建，由 ErrorMiddleware 统一处理**
 - 所有测试使用 Ginkgo + Gomega 风格，mock 用 mockery 生成
 - 所有构建必须通过多阶段 Dockerfile（golang:alpine → alpine）
 - 迁移文件直接放在 migrations/ 根目录（无需子目录，无需独立 Dockerfile）
