@@ -11,7 +11,7 @@
 - Migration: golang-migrate/migrate（CLI 工具）
 - API Spec: OpenAPI 2.0 (Swagger)
 - Task Runner: Task（替代 Makefile）
-- DI: Google Wire（可选）
+- DI: Google Wire
 - Validation: ozzo-validation
 - Testing: Ginkgo + Gomega（BDD 风格）
 - Mock: mockery（生成接口 mock）
