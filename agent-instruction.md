@@ -15,6 +15,8 @@
 - Validation: ozzo-validation
 - Testing: Ginkgo + Gomega（BDD 风格）
 - Mock: mockery（生成接口 mock）
+- Lint: golangci-lint（包含 gofmt, goimports, vet, staticcheck 等）
+- Format: gofmt（标准格式化）
 
 ## 目录结构规范
 project/
@@ -37,6 +39,7 @@ project/
 │   └── 000002_add_users.up.sql
 ├── configs/config.yaml         # 主配置
 ├── mocks/                      # mockery 生成的 mock 文件
+├── .golangci.yml               # lint 配置（新增）
 ├── Dockerfile                  # 多阶段构建
 ├── docker-compose.yml          # 本地编排
 └── Taskfile.yml                # 命令定义
@@ -59,32 +62,32 @@ project/
 - 每个 Handler 上方必须添加 Swagger 注释
 
 func (c *UserController) GetUser(ctx *gin.Context) {
-    id := ctx.Param("id")
-    user, err := c.service.GetByID(ctx, id)
-    if err != nil {
-        ctx.Error(err)  // 交给 ErrorMiddleware 处理
-        return
-    }
-    response.Success(ctx, user)
+   id := ctx.Param("id")
+   user, err := c.service.GetByID(ctx, id)
+   if err != nil {
+       ctx.Error(err)  // 交给 ErrorMiddleware 处理
+       return
+   }
+   response.Success(ctx, user)
 }
 
 func (c *UserController) CreateUser(ctx *gin.Context) {
-    var req dto.CreateUserRequest
-    if err := ctx.ShouldBindJSON(&req); err != nil {
-        ctx.Error(errors.NewBadRequest("参数绑定失败", err))
-        return
-    }
-    if err := req.Validate(); err != nil {
-        ctx.Error(errors.NewValidation("参数校验失败", err))
-        return
-    }
-    
-    user, err := c.service.Create(ctx, &req)
-    if err != nil {
-        ctx.Error(err)
-        return
-    }
-    response.Success(ctx, http.StatusCreated, user)
+   var req dto.CreateUserRequest
+   if err := ctx.ShouldBindJSON(&req); err != nil {
+       ctx.Error(errors.NewBadRequest("参数绑定失败", err))
+       return
+   }
+   if err := req.Validate(); err != nil {
+       ctx.Error(errors.NewValidation("参数校验失败", err))
+       return
+   }
+   
+   user, err := c.service.Create(ctx, &req)
+   if err != nil {
+       ctx.Error(err)
+       return
+   }
+   response.Success(ctx, http.StatusCreated, user)
 }
 
 ### 2. Service 层
@@ -94,24 +97,24 @@ func (c *UserController) CreateUser(ctx *gin.Context) {
 - **返回：使用 errors.NewXxx() 包装 domain error**
 
 type UserService interface {
-    GetByID(ctx context.Context, id string) (*model.User, error)
-    Create(ctx context.Context, req *dto.CreateUserRequest) (*model.User, error)
+   GetByID(ctx context.Context, id string) (*model.User, error)
+   Create(ctx context.Context, req *dto.CreateUserRequest) (*model.User, error)
 }
 
 type userService struct {
-    repo UserRepository
-    log  *logrus.Logger
+   repo UserRepository
+   log  *logrus.Logger
 }
 
 func (s *userService) GetByID(ctx context.Context, id string) (*model.User, error) {
-    user, err := s.repo.GetByID(ctx, id)
-    if err != nil {
-        return nil, errors.NewInternal("数据库查询失败", err)
-    }
-    if user == nil {
-        return nil, errors.NewNotFound("用户不存在", nil)
-    }
-    return user, nil
+   user, err := s.repo.GetByID(ctx, id)
+   if err != nil {
+       return nil, errors.NewInternal("数据库查询失败", err)
+   }
+   if user == nil {
+       return nil, errors.NewNotFound("用户不存在", nil)
+   }
+   return user, nil
 }
 
 ### 3. Repository 层
@@ -121,10 +124,10 @@ func (s *userService) GetByID(ctx context.Context, id string) (*model.User, erro
 - **禁止返回具体错误类型，统一返回 errors.NewInternal()**
 
 type UserRepository interface {
-    GetByID(ctx context.Context, id uint) (*model.User, error)
-    Create(ctx context.Context, user *model.User) error
-    Update(ctx context.Context, user *model.User) error
-    Delete(ctx context.Context, id uint) error
+   GetByID(ctx context.Context, id uint) (*model.User, error)
+   Create(ctx context.Context, user *model.User) error
+   Update(ctx context.Context, user *model.User) error
+   Delete(ctx context.Context, id uint) error
 }
 
 ### 4. Model 定义
@@ -133,12 +136,12 @@ type UserRepository interface {
 - Gorm 标签必须包含 comment 说明字段用途
 
 type User struct {
-    ID        uint           `gorm:"primarykey;comment:用户ID"`
-    OpenID    string         `gorm:"uniqueIndex;size:64;comment:微信OpenID"`
-    Nickname  string         `gorm:"size:50;comment:昵称"`
-    CreatedAt time.Time      `gorm:"comment:创建时间"`
-    UpdatedAt time.Time      `gorm:"comment:更新时间"`
-    DeletedAt gorm.DeletedAt `gorm:"index;comment:删除时间"`
+   ID        uint           `gorm:"primarykey;comment:用户ID"`
+   OpenID    string         `gorm:"uniqueIndex;size:64;comment:微信OpenID"`
+   Nickname  string         `gorm:"size:50;comment:昵称"`
+   CreatedAt time.Time      `gorm:"comment:创建时间"`
+   UpdatedAt time.Time      `gorm:"comment:更新时间"`
+   DeletedAt gorm.DeletedAt `gorm:"index;comment:删除时间"`
 }
 
 ### 5. 参数校验（ozzo-validation）
@@ -147,28 +150,28 @@ type User struct {
 - 错误信息统一格式化
 
 type CreateUserRequest struct {
-    Nickname string `json:"nickname"`
-    Email    string `json:"email"`
-    Age      int    `json:"age"`
+   Nickname string `json:"nickname"`
+   Email    string `json:"email"`
+   Age      int    `json:"age"`
 }
 
 func (r CreateUserRequest) Validate() error {
-    return validation.ValidateStruct(&r,
-        validation.Field(&r.Nickname, validation.Required, validation.Length(2, 50)),
-        validation.Field(&r.Email, validation.Required, is.Email),
-        validation.Field(&r.Age, validation.Required, validation.Min(0), validation.Max(150)),
-    )
+   return validation.ValidateStruct(&r,
+       validation.Field(&r.Nickname, validation.Required, validation.Length(2, 50)),
+       validation.Field(&r.Email, validation.Required, is.Email),
+       validation.Field(&r.Age, validation.Required, validation.Min(0), validation.Max(150)),
+   )
 }
 
 // Controller 中使用
 var req CreateUserRequest
 if err := ctx.ShouldBindJSON(&req); err != nil {
-    ctx.Error(errors.NewBadRequest("参数绑定失败", err))
-    return
+   ctx.Error(errors.NewBadRequest("参数绑定失败", err))
+   return
 }
 if err := req.Validate(); err != nil {
-    ctx.Error(errors.NewValidation("参数校验失败", err))
-    return
+   ctx.Error(errors.NewValidation("参数校验失败", err))
+   return
 }
 
 ### 6. 统一错误处理（errors 包）
@@ -177,115 +180,182 @@ if err := req.Validate(); err != nil {
 package errors
 
 type AppError struct {
-    Code    int    `json:"code"`     // 业务错误码
-    Message string `json:"message"`  // 用户可读消息
-    HTTPCode int   `json:"-"`        // HTTP 状态码（不序列化）
-    Cause   error  `json:"-"`        // 原始错误（日志用，不暴露）
+   Code    int    `json:"code"`     // 业务错误码
+   Message string `json:"message"`  // 用户可读消息
+   HTTPCode int   `json:"-"`        // HTTP 状态码（不序列化）
+   Cause   error  `json:"-"`        // 原始错误（日志用，不暴露）
 }
 
 func (e *AppError) Error() string {
-    return e.Message
+   return e.Message
 }
 
 // 预定义错误类型
 func NewBadRequest(message string, cause error) *AppError {
-    return &AppError{Code: 400001, Message: message, HTTPCode: 400, Cause: cause}
+   return &AppError{Code: 400001, Message: message, HTTPCode: 400, Cause: cause}
 }
 
 func NewValidation(message string, cause error) *AppError {
-    return &AppError{Code: 400002, Message: message, HTTPCode: 400, Cause: cause}
+   return &AppError{Code: 400002, Message: message, HTTPCode: 400, Cause: cause}
 }
 
 func NewUnauthorized(message string, cause error) *AppError {
-    return &AppError{Code: 401001, Message: message, HTTPCode: 401, Cause: cause}
+   return &AppError{Code: 401001, Message: message, HTTPCode: 401, Cause: cause}
 }
 
 func NewForbidden(message string, cause error) *AppError {
-    return &AppError{Code: 403001, Message: message, HTTPCode: 403, Cause: cause}
+   return &AppError{Code: 403001, Message: message, HTTPCode: 403, Cause: cause}
 }
 
 func NewNotFound(message string, cause error) *AppError {
-    return &AppError{Code: 404001, Message: message, HTTPCode: 404, Cause: cause}
+   return &AppError{Code: 404001, Message: message, HTTPCode: 404, Cause: cause}
 }
 
 func NewInternal(message string, cause error) *AppError {
-    return &AppError{Code: 500001, Message: message, HTTPCode: 500, Cause: cause}
+   return &AppError{Code: 500001, Message: message, HTTPCode: 500, Cause: cause}
 }
 
 // 错误转换工具
 func ToResponse(err error) (int, map[string]interface{}) {
-    if appErr, ok := err.(*AppError); ok {
-        return appErr.HTTPCode, map[string]interface{}{
-            "code":    appErr.Code,
-            "message": appErr.Message,
-            "data":    nil,
-        }
-    }
-    // 未知错误类型，统一包装为 500
-    return http.StatusInternalServerError, map[string]interface{}{
-        "code":    500000,
-        "message": "服务器内部错误",
-        "data":    nil,
-    }
+   if appErr, ok := err.(*AppError); ok {
+       return appErr.HTTPCode, map[string]interface{}{
+           "code":    appErr.Code,
+           "message": appErr.Message,
+           "data":    nil,
+       }
+   }
+   // 未知错误类型，统一包装为 500
+   return http.StatusInternalServerError, map[string]interface{}{
+       "code":    500000,
+       "message": "服务器内部错误",
+       "data":    nil,
+   }
 }
 
 #### ErrorMiddleware 实现
 package middleware
 
 import (
-    "github.com/gin-gonic/gin"
-    "project/internal/pkg/errors"
-    "github.com/sirupsen/logrus"
+   "github.com/gin-gonic/gin"
+   "project/internal/pkg/errors"
+   "github.com/sirupsen/logrus"
 )
 
 func ErrorMiddleware(log *logrus.Logger) gin.HandlerFunc {
-    return func(ctx *gin.Context) {
-        ctx.Next() // 先执行后续 handler
-        
-        // 检查是否有错误
-        if len(ctx.Errors) > 0 {
-            err := ctx.Errors.Last().Err
-            
-            // 记录日志（包含原始错误）
-            if appErr, ok := err.(*errors.AppError); ok && appErr.Cause != nil {
-                log.WithError(appErr.Cause).WithField("code", appErr.Code).Error(appErr.Message)
-            } else {
-                log.WithError(err).Error("request error")
-            }
-            
-            // 统一转换为 response
-            httpCode, resp := errors.ToResponse(err)
-            ctx.JSON(httpCode, resp)
-            ctx.Abort()
-        }
-    }
+   return func(ctx *gin.Context) {
+       ctx.Next() // 先执行后续 handler
+       
+       // 检查是否有错误
+       if len(ctx.Errors) > 0 {
+           err := ctx.Errors.Last().Err
+           
+           // 记录日志（包含原始错误）
+           if appErr, ok := err.(*errors.AppError); ok && appErr.Cause != nil {
+               log.WithError(appErr.Cause).WithField("code", appErr.Code).Error(appErr.Message)
+           } else {
+               log.WithError(err).Error("request error")
+           }
+           
+           // 统一转换为 response
+           httpCode, resp := errors.ToResponse(err)
+           ctx.JSON(httpCode, resp)
+           ctx.Abort()
+       }
+   }
 }
 
 #### response 包更新
 package response
 
 import (
-    "net/http"
-    "github.com/gin-gonic/gin"
+   "net/http"
+   "github.com/gin-gonic/gin"
 )
 
 // Success 统一成功响应
 func Success(ctx *gin.Context, data interface{}) {
-    ctx.JSON(http.StatusOK, gin.H{
-        "code":    0,
-        "message": "success",
-        "data":    data,
-    })
+   ctx.JSON(http.StatusOK, gin.H{
+       "code":    0,
+       "message": "success",
+       "data":    data,
+   })
 }
 
 // SuccessWithStatus 指定状态码的成功响应
 func SuccessWithStatus(ctx *gin.Context, status int, data interface{}) {
-    ctx.JSON(status, gin.H{
-        "code":    0,
-        "message": "success",
-        "data":    data,
-    })
+   ctx.JSON(status, gin.H{
+       "code":    0,
+       "message": "success",
+       "data":    data,
+   })
 }
+
+### 7. 代码规范与 Lint（强制）
+
+#### .golangci.yml 配置
+run:
+ timeout: 5m
+ issues-exit-code: 1
+ tests: true
+
+output:
+ format: colored-line-number
+ print-issued-lines: true
+ print-linter-name: true
+
+linters-settings:
+ gofmt:
+   simplify: true
+ goimports:
+   local-prefixes: github.com/your/project
+ govet:
+   check-shadowing: true
+   enable-all: true
+ staticcheck:
+   checks: ["all"]
+ errcheck:
+   check-type-assertions: true
+   check-blank: true
+ gocyclo:
+   min-complexity: 15
+ misspell:
+   locale: US
+
+linters:
+ enable:
+   - gofmt        # 标准格式化
+   - goimports    # 自动导入管理
+   - govet        # 标准 vet 工具
+   - staticcheck  # 静态分析
+   - errcheck     # 检查未处理错误
+   - gosimple     # 简化代码建议
+   - ineffassign  # 无效赋值检查
+   - typecheck    # 类型检查
+   - unused       # 未使用代码
+   - misspell     # 拼写检查
+   - gocyclo      # 圈复杂度
+ disable:
+   - deadcode     # 已弃用，由 unused 替代
+   - structcheck  # 已弃用
+
+issues:
+ exclude-use-default: false
+ max-issues-per-linter: 50
+ max-same-issues: 3
+
+#### Lint 相关 Task 命令
+task lint              # 运行 golangci-lint 检查
+task lint-fix          # 自动修复（gofmt, goimports）
+task format            # 仅运行 gofmt 格式化
+
+#### 编码规范检查清单
+- [ ] 运行 `task lint` 无错误
+- [ ] 所有文件通过 `gofmt -s` 简化格式化
+- [ ] 导入分组正确：标准库 → 第三方 → 项目内部（goimports）
+- [ ] 无未处理的 error（errcheck）
+- [ ] 无无效赋值（ineffassign）
+- [ ] 函数圈复杂度 < 15（gocyclo）
+- [ ] 无拼写错误（misspell）
 
 ## 测试规范（Ginkgo + mockery）
 
@@ -302,14 +372,14 @@ filename: "{{.MockName}}.go"
 outpkg: mocks
 dir: mocks
 packages:
-  github.com/your/project/internal/service:
-    interfaces:
-      UserService:
-      ArticleService:
-  github.com/your/project/internal/repository:
-    interfaces:
-      UserRepository:
-      ArticleRepository:
+ github.com/your/project/internal/service:
+   interfaces:
+     UserService:
+     ArticleService:
+ github.com/your/project/internal/repository:
+   interfaces:
+     UserRepository:
+     ArticleRepository:
 
 ### 3. 生成 mock
 task mock-generate
@@ -318,148 +388,148 @@ task mock-generate
 package service_test
 
 import (
-    "context"
-    "errors"
+   "context"
+   "errors"
 
-    . "github.com/onsi/ginkgo/v2"
-    . "github.com/onsi/gomega"
-    "github.com/sirupsen/logrus"
+   . "github.com/onsi/ginkgo/v2"
+   . "github.com/onsi/gomega"
+   "github.com/sirupsen/logrus"
 
-    "project/internal/model"
-    "project/internal/service"
-    "project/internal/pkg/errors"
-    "project/mocks"
+   "project/internal/model"
+   "project/internal/service"
+   "project/internal/pkg/errors"
+   "project/mocks"
 )
 
 var _ = Describe("UserService", func() {
-    var (
-        mockRepo *mocks.UserRepository
-        svc      service.UserService
-        ctx      context.Context
-    )
+   var (
+       mockRepo *mocks.UserRepository
+       svc      service.UserService
+       ctx      context.Context
+   )
 
-    BeforeEach(func() {
-        mockRepo = new(mocks.UserRepository)
-        svc = service.NewUserService(mockRepo, logrus.New())
-        ctx = context.Background()
-    })
+   BeforeEach(func() {
+       mockRepo = new(mocks.UserRepository)
+       svc = service.NewUserService(mockRepo, logrus.New())
+       ctx = context.Background()
+   })
 
-    Describe("GetByID", func() {
-        Context("当用户存在时", func() {
-            It("应返回用户信息", func() {
-                expected := &model.User{ID: 1, Nickname: "test"}
-                mockRepo.On("GetByID", ctx, uint(1)).Return(expected, nil)
+   Describe("GetByID", func() {
+       Context("当用户存在时", func() {
+           It("应返回用户信息", func() {
+               expected := &model.User{ID: 1, Nickname: "test"}
+               mockRepo.On("GetByID", ctx, uint(1)).Return(expected, nil)
 
-                user, err := svc.GetByID(ctx, "1")
+               user, err := svc.GetByID(ctx, "1")
 
-                Expect(err).To(BeNil())
-                Expect(user.ID).To(Equal(uint(1)))
-                Expect(user.Nickname).To(Equal("test"))
-                mockRepo.AssertExpectations(GinkgoT())
-            })
-        })
+               Expect(err).To(BeNil())
+               Expect(user.ID).To(Equal(uint(1)))
+               Expect(user.Nickname).To(Equal("test"))
+               mockRepo.AssertExpectations(GinkgoT())
+           })
+       })
 
-        Context("当用户不存在时", func() {
-            It("应返回 NotFound 错误", func() {
-                mockRepo.On("GetByID", ctx, uint(999)).Return(nil, nil)
+       Context("当用户不存在时", func() {
+           It("应返回 NotFound 错误", func() {
+               mockRepo.On("GetByID", ctx, uint(999)).Return(nil, nil)
 
-                user, err := svc.GetByID(ctx, "999")
+               user, err := svc.GetByID(ctx, "999")
 
-                Expect(err).To(HaveOccurred())
-                Expect(err.(*errors.AppError).Code).To(Equal(404001))
-                Expect(user).To(BeNil())
-            })
-        })
+               Expect(err).To(HaveOccurred())
+               Expect(err.(*errors.AppError).Code).To(Equal(404001))
+               Expect(user).To(BeNil())
+           })
+       })
 
-        Context("当数据库出错时", func() {
-            It("应返回 Internal 错误", func() {
-                mockRepo.On("GetByID", ctx, uint(1)).Return(nil, errors.New("db error"))
+       Context("当数据库出错时", func() {
+           It("应返回 Internal 错误", func() {
+               mockRepo.On("GetByID", ctx, uint(1)).Return(nil, errors.New("db error"))
 
-                user, err := svc.GetByID(ctx, "1")
+               user, err := svc.GetByID(ctx, "1")
 
-                Expect(err).To(HaveOccurred())
-                Expect(err.(*errors.AppError).HTTPCode).To(Equal(500))
-                Expect(user).To(BeNil())
-            })
-        })
-    })
+               Expect(err).To(HaveOccurred())
+               Expect(err.(*errors.AppError).HTTPCode).To(Equal(500))
+               Expect(user).To(BeNil())
+           })
+       })
+   })
 })
 
 ### 5. Controller 层测试（使用 Gin Test）
 package controller_test
 
 import (
-    "bytes"
-    "encoding/json"
-    "net/http"
-    "net/http/httptest"
+   "bytes"
+   "encoding/json"
+   "net/http"
+   "net/http/httptest"
 
-    . "github.com/onsi/ginkgo/v2"
-    . "github.com/onsi/gomega"
-    "github.com/gin-gonic/gin"
-    "github.com/sirupsen/logrus"
+   . "github.com/onsi/ginkgo/v2"
+   . "github.com/onsi/gomega"
+   "github.com/gin-gonic/gin"
+   "github.com/sirupsen/logrus"
 
-    "project/internal/controller"
-    "project/internal/middleware"
-    "project/mocks"
+   "project/internal/controller"
+   "project/internal/middleware"
+   "project/mocks"
 )
 
 var _ = Describe("UserController", func() {
-    var (
-        mockSvc *mocks.UserService
-        ctrl    *controller.UserController
-        router  *gin.Engine
-        rec     *httptest.ResponseRecorder
-    )
+   var (
+       mockSvc *mocks.UserService
+       ctrl    *controller.UserController
+       router  *gin.Engine
+       rec     *httptest.ResponseRecorder
+   )
 
-    BeforeEach(func() {
-        gin.SetMode(gin.TestMode)
-        mockSvc = new(mocks.UserService)
-        ctrl = controller.NewUserController(mockSvc, logrus.New())
-        router = gin.New()
-        // 注册 ErrorMiddleware 用于测试
-        router.Use(middleware.ErrorMiddleware(logrus.New()))
-        rec = httptest.NewRecorder()
-    })
+   BeforeEach(func() {
+       gin.SetMode(gin.TestMode)
+       mockSvc = new(mocks.UserService)
+       ctrl = controller.NewUserController(mockSvc, logrus.New())
+       router = gin.New()
+       // 注册 ErrorMiddleware 用于测试
+       router.Use(middleware.ErrorMiddleware(logrus.New()))
+       rec = httptest.NewRecorder()
+   })
 
-    Describe("POST /users", func() {
-        Context("当参数有效时", func() {
-            It("应创建用户并返回 201", func() {
-                mockSvc.On("Create", mock.Anything, mock.Anything).Return(&model.User{ID: 1}, nil)
+   Describe("POST /users", func() {
+       Context("当参数有效时", func() {
+           It("应创建用户并返回 201", func() {
+               mockSvc.On("Create", mock.Anything, mock.Anything).Return(&model.User{ID: 1}, nil)
 
-                body, _ := json.Marshal(map[string]string{
-                    "nickname": "test",
-                    "email":    "test@example.com",
-                })
-                req, _ := http.NewRequest("POST", "/users", bytes.NewBuffer(body))
-                req.Header.Set("Content-Type", "application/json")
+               body, _ := json.Marshal(map[string]string{
+                   "nickname": "test",
+                   "email":    "test@example.com",
+               })
+               req, _ := http.NewRequest("POST", "/users", bytes.NewBuffer(body))
+               req.Header.Set("Content-Type", "application/json")
 
-                router.POST("/users", ctrl.CreateUser)
-                router.ServeHTTP(rec, req)
+               router.POST("/users", ctrl.CreateUser)
+               router.ServeHTTP(rec, req)
 
-                Expect(rec.Code).To(Equal(http.StatusCreated))
-            })
-        })
+               Expect(rec.Code).To(Equal(http.StatusCreated))
+           })
+       })
 
-        Context("当参数校验失败时", func() {
-            It("应返回 400 和错误码", func() {
-                body, _ := json.Marshal(map[string]string{
-                    "nickname": "",
-                })
-                req, _ := http.NewRequest("POST", "/users", bytes.NewBuffer(body))
-                req.Header.Set("Content-Type", "application/json")
+       Context("当参数校验失败时", func() {
+           It("应返回 400 和错误码", func() {
+               body, _ := json.Marshal(map[string]string{
+                   "nickname": "",
+               })
+               req, _ := http.NewRequest("POST", "/users", bytes.NewBuffer(body))
+               req.Header.Set("Content-Type", "application/json")
 
-                router.POST("/users", ctrl.CreateUser)
-                router.ServeHTTP(rec, req)
+               router.POST("/users", ctrl.CreateUser)
+               router.ServeHTTP(rec, req)
 
-                Expect(rec.Code).To(Equal(http.StatusBadRequest))
-                // 验证错误码格式
-                var resp map[string]interface{}
-                json.Unmarshal(rec.Body.Bytes(), &resp)
-                Expect(resp["code"]).To(BeNumerically(">=", 400000))
-            })
-        })
-    })
+               Expect(rec.Code).To(Equal(http.StatusBadRequest))
+               // 验证错误码格式
+               var resp map[string]interface{}
+               json.Unmarshal(rec.Body.Bytes(), &resp)
+               Expect(resp["code"]).To(BeNumerically(">=", 400000))
+           })
+       })
+   })
 })
 
 ### 6. 测试命令
@@ -489,10 +559,10 @@ COPY . .
 
 # 构建二进制（静态链接，无 CGO）
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-s -w -extldflags '-static'" \
-    -a -installsuffix cgo \
-    -o bin/server \
-    ./cmd/server
+   -ldflags="-s -w -extldflags '-static'" \
+   -a -installsuffix cgo \
+   -o bin/server \
+   ./cmd/server
 
 # 阶段2：运行（使用纯净 Alpine）
 FROM alpine:3.19
@@ -502,7 +572,7 @@ RUN apk add --no-cache ca-certificates tzdata
 
 # 创建非 root 用户运行
 RUN addgroup -g 1000 -S appgroup && \
-    adduser -u 1000 -S appuser -G appgroup
+   adduser -u 1000 -S appuser -G appgroup
 
 # 设置工作目录
 WORKDIR /app
@@ -525,7 +595,7 @@ EXPOSE 8080
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
 # 运行
 ENTRYPOINT ["/app/server"]
@@ -534,66 +604,66 @@ ENTRYPOINT ["/app/server"]
 version: "3.8"
 
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      - APP_ENV=development
-      - APP_SERVER_PORT=8080
-      - APP_DATABASE_HOST=mysql
-      - APP_DATABASE_PORT=3306
-      - APP_DATABASE_USER=root
-      - APP_DATABASE_PASSWORD=secret
-      - APP_DATABASE_NAME=miniapp
-      - APP_LOG_LEVEL=debug
-    volumes:
-      - ./configs:/app/configs:ro
-      - ./storage/logs:/app/storage/logs
-    depends_on:
-      mysql:
-        condition: service_healthy
-    networks:
-      - app-network
+ app:
+   build:
+     context: .
+     dockerfile: Dockerfile
+   ports:
+     - "8080:8080"
+   environment:
+     - APP_ENV=development
+     - APP_SERVER_PORT=8080
+     - APP_DATABASE_HOST=mysql
+     - APP_DATABASE_PORT=3306
+     - APP_DATABASE_USER=root
+     - APP_DATABASE_PASSWORD=secret
+     - APP_DATABASE_NAME=miniapp
+     - APP_LOG_LEVEL=debug
+   volumes:
+     - ./configs:/app/configs:ro
+     - ./storage/logs:/app/storage/logs
+   depends_on:
+     mysql:
+       condition: service_healthy
+   networks:
+     - app-network
 
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: secret
-      MYSQL_DATABASE: miniapp
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql-data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - app-network
+ mysql:
+   image: mysql:8.0
+   environment:
+     MYSQL_ROOT_PASSWORD: secret
+     MYSQL_DATABASE: miniapp
+   ports:
+     - "3306:3306"
+   volumes:
+     - mysql-data:/var/lib/mysql
+   healthcheck:
+     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+     interval: 5s
+     timeout: 3s
+     retries: 5
+   networks:
+     - app-network
 
-  migrate:
-    image: migrate/migrate:v4.17.0
-    volumes:
-      - ./migrations:/migrations:ro
-    environment:
-      - MIGRATE_DATABASE_URL=mysql://root:secret@tcp(mysql:3306)/miniapp?multiStatements=true
-    command: ["-path", "/migrations", "-database", "${MIGRATE_DATABASE_URL}", "up"]
-    depends_on:
-      mysql:
-        condition: service_healthy
-    networks:
-      - app-network
+ migrate:
+   image: migrate/migrate:v4.17.0
+   volumes:
+     - ./migrations:/migrations:ro
+   environment:
+     - MIGRATE_DATABASE_URL=mysql://root:secret@tcp(mysql:3306)/miniapp?multiStatements=true
+   command: ["-path", "/migrations", "-database", "${MIGRATE_DATABASE_URL}", "up"]
+   depends_on:
+     mysql:
+       condition: service_healthy
+   networks:
+     - app-network
 
 volumes:
-  mysql-data:
+ mysql-data:
 
 networks:
-  app-network:
-    driver: bridge
+ app-network:
+   driver: bridge
 
 ### 3. 迁移策略（二选一）
 
@@ -613,10 +683,10 @@ networks:
 - 版本号：6位数字，递增（000001, 000002...）
 - 方向：up（升级）或 down（回滚）
 - 示例：
-  - 000001_init_schema.up.sql
-  - 000001_init_schema.down.sql
-  - 000002_add_users.up.sql
-  - 000002_add_users.down.sql
+ - 000001_init_schema.up.sql
+ - 000001_init_schema.down.sql
+ - 000002_add_users.up.sql
+ - 000002_add_users.down.sql
 
 ### 5. Docker 相关 Task 命令
 task docker-build         # 构建镜像
@@ -638,7 +708,8 @@ task migrate-local        # 本地执行迁移（使用 migrate CLI）
 8. 数据库迁移：task migrate-create -- <name> 创建 SQL
 9. 生成 mock：task mock-generate
 10. 编写测试：Ginkgo BDD 风格，覆盖成功/失败场景
-11. 构建镜像：task docker-build 验证打包
+11. **运行 lint：task lint 确保无代码规范问题**
+12. 构建镜像：task docker-build 验证打包
 
 ## Task 命令规范
 所有操作必须通过 Task，禁止手写 Makefile：
@@ -649,7 +720,9 @@ task test                 # 运行所有测试（Ginkgo）
 task test-unit            # 仅单元测试
 task test-coverage        # 覆盖率报告
 task test-watch           # 监听模式
-task lint                 # 代码检查
+task lint                 # 运行 golangci-lint 检查
+task lint-fix             # 自动修复代码规范（gofmt, goimports）
+task format               # 仅运行 gofmt 格式化
 task mock-generate        # 生成 mock 文件
 task migrate-create       # 创建迁移文件（使用 migrate CLI）
 task migrate-local        # 本地执行迁移
@@ -692,11 +765,11 @@ task docker-compose-down  # 停止环境
 - **错误结构：{code, message, http_code}，其中 code 为业务码，http_code 为 HTTP 状态码**
 - **错误传递：Controller/Service/Repository 统一返回 error，由 ErrorMiddleware 统一转换**
 - **错误码规范：**
-  - 400xxx: 参数错误（400001=通用参数错误，400002=校验失败）
-  - 401xxx: 未认证（401001=Token无效）
-  - 403xxx: 无权限（403001=禁止访问）
-  - 404xxx: 资源不存在（404001=记录不存在）
-  - 500xxx: 服务器错误（500001=内部错误）
+ - 400xxx: 参数错误（400001=通用参数错误，400002=校验失败）
+ - 401xxx: 未认证（401001=Token无效）
+ - 403xxx: 无权限（403001=禁止访问）
+ - 404xxx: 资源不存在（404001=记录不存在）
+ - 500xxx: 服务器错误（500001=内部错误）
 - **错误创建：使用 errors.NewXxx() 系列函数，禁止直接构造 AppError**
 - **错误响应：统一格式 {"code": 400001, "message": "错误描述", "data": null}**
 
@@ -719,6 +792,7 @@ task docker-compose-down  # 停止环境
 - 禁止在最终镜像中保留 Go 编译器（必须 copy 到 alpine）
 - 禁止以 root 用户运行容器（必须创建 appuser）
 - 禁止为 migrations 创建独立 Dockerfile（直接使用官方 migrate/migrate 镜像或应用内迁移）
+- **禁止提交未通过 lint 检查的代码（CI 必须配置 lint 步骤）**
 
 ## Git 提交规范
 - feat: 新功能
@@ -740,8 +814,9 @@ task docker-compose-down  # 停止环境
 7. 运行 task mock-generate 生成 mock
 8. 创建 service/user_service_test.go 编写 Ginkgo BDD 测试（验证错误类型）
 9. 创建 controller/user_controller_test.go 编写 HTTP 层测试（验证错误码）
-10. 验证 task docker-build 成功构建多阶段镜像
-11. 验证 task docker-compose-up 能自动执行迁移并启动服务
+10. **运行 task lint 确保代码规范通过**
+11. 验证 task docker-build 成功构建多阶段镜像
+12. 验证 task docker-compose-up 能自动执行迁移并启动服务
 
 ## 上下文记忆（Agent 必须记住）
 - 所有数据库操作必须经过 Repository 接口
@@ -751,6 +826,7 @@ task docker-compose-down  # 停止环境
 - **所有错误统一使用 internal/pkg/errors 包创建，由 ErrorMiddleware 统一处理**
 - 所有测试使用 Ginkgo + Gomega 风格，mock 用 mockery 生成
 - 所有构建必须通过多阶段 Dockerfile（golang:alpine → alpine）
+- **所有代码必须通过 golangci-lint 检查（包含 gofmt, goimports 等）**
 - 迁移文件直接放在 migrations/ 根目录（无需子目录，无需独立 Dockerfile）
 - Docker 环境使用官方 migrate/migrate 镜像执行迁移
 - 配置变更后必须重启（Viper 不支持热重载，除非显式实现）
