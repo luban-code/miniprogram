@@ -831,3 +831,277 @@ task docker-compose-down  # 停止环境
 - Docker 环境使用官方 migrate/migrate 镜像执行迁移
 - 配置变更后必须重启（Viper 不支持热重载，除非显式实现）
 - 开发环境用 task dev，生产用编译后的二进制或 Docker 镜像
+
+## 业务流程规范（基于 OpenAPI 2.0 定义）
+
+### 1. 认证模块业务流程
+
+#### 1.1 微信登录（/auth/wechat-login）
+1. 小程序前端调用 wx.login() 获取临时登录凭证 code
+2. 前端将 code 发送到后端 /auth/wechat-login
+3. 后端用 code + appid + secret 请求微信接口获取 openid
+4. 查询数据库：openid 是否存在？
+   - 存在 → 直接生成 JWT Token，返回用户信息
+   - 不存在 → 创建新用户（user_type=1前台用户）→ 生成 JWT Token，返回用户信息
+5. 可选：如传 encrypted_data 和 iv，解密获取手机号绑定
+
+#### 1.2 管理员登录（/auth/admin-login）
+1. 前端获取图形验证码（需单独接口）
+2. 用户输入邮箱、密码、验证码
+3. 后端验证：
+   - 验证码是否正确（Redis/Session 比对）
+   - 邮箱是否存在且 user_type ∈ {2,3}（管理员）
+   - 密码是否正确（bcrypt 比对）
+4. 验证通过 → 生成 JWT Token，更新 last_login_at
+5. 记录审计日志（admin:login）
+
+#### 1.3 Token 刷新（/auth/refresh）
+1. 前端在 Token 即将过期时调用（需携带有效 Token）
+2. 后端解析 Token 获取 user_id
+3. 查询用户状态（是否被冻结/删除）
+4. 生成新的 Access Token（延长有效期）
+5. 返回新 Token（Refresh Token 机制可在此扩展）
+
+### 2. 用户模块业务流程
+
+#### 2.1 获取/更新当前用户信息（/users/profile）
+- 获取流程：
+  1. 从 JWT Token 解析 user_id
+  2. 查询 users 表获取基础信息
+  3. 查询 user_tags 表获取用户标签列表
+  4. 组装 UserInfo 返回（openid 仅自己可见）
+- 更新流程：
+  1. 验证 JWT Token
+  2. 校验参数：nickname（长度、敏感词过滤）、avatar_url（格式校验、域名白名单）
+  3. 更新 users 表对应字段
+  4. 返回成功响应
+
+#### 2.2 获取用户权限列表（/users/permissions）
+1. 从 JWT 获取 user_id
+2. 查询 user_roles 表获取用户所有 role_id
+3. 查询 roles 表获取角色编码列表
+4. 查询 role_permissions 表获取所有 permission_id
+5. 去重后查询 permissions 表获取权限编码列表
+6. 返回 {roles: [...], permissions: [...]}
+7. 【优化】：权限可缓存到 Redis，用户登录时写入，变更时清除
+
+#### 2.3 管理员用户管理（/admin/users）
+- 列表查询：
+  1. 权限校验：检查当前用户是否有 "user:view" 权限
+  2. 参数处理：page/page_size/keyword/user_type/status
+  3. 构建动态 SQL 查询 users 表
+  4. 联查 user_tags（聚合为数组）
+  5. 分页返回，敏感字段（openid）脱敏
+- 创建管理员：
+  1. 权限校验："user:edit"
+  2. 校验：email 唯一性、password 强度、user_type 合法性
+  3. bcrypt 加密密码
+  4. 插入 users 表（user_type=2或3）
+  5. 记录审计日志（user:create）
+  6. 返回 201 + Location 头
+- 更新/删除/分配角色/标签管理关键检查：
+  - 不能修改自己的 user_type（防止降权后无法操作）
+  - 删除前检查：是否有创建的内容、是否为唯一系统管理员
+  - 标签操作：去重、限制单个用户标签数量（如最多10个）
+
+### 3. 权限管理（RBAC）业务流程
+
+#### 3.1 角色管理（/admin/roles）
+- 创建角色：
+  1. 权限校验："role:edit"
+  2. 校验：name 唯一性、parent_id 是否存在（层级校验）
+  3. 计算 level：parent_id=0 则为1，否则父角色 level+1
+  4. 检查层级深度限制（如最多5层）
+  5. 插入 roles 表
+  6. 如传 permission_ids，批量插入 role_permissions
+  7. 清除角色权限缓存
+- 删除角色：
+  1. 检查 is_builtin=1 → 返回 403 禁止删除
+  2. 检查是否有子角色 → 如有，需先删除子角色或转移
+  3. 检查是否已分配给用户 → 如有，提示先解除关联
+  4. 事务删除：role_permissions → user_roles → roles
+  5. 清除相关用户权限缓存
+
+#### 3.2 权限树获取（/admin/permissions）
+1. 查询所有 permissions（type=1菜单,2按钮,3接口）
+2. 按 parent_id 构建树形结构（递归或层级遍历）
+3. 返回树形 JSON，用于前端菜单渲染和权限配置界面
+4. 【数据初始化】：系统启动时检查内置权限是否完整，缺失自动插入
+
+### 4. 内容管理 - 模块业务流程
+
+#### 4.1 模块管理（/modules, /admin/modules）
+- 列表查询（前台）：只返回 status=1 的模块，按 sort_order 排序，可用于小程序首页模块导航
+- 创建/更新（管理端）：
+  1. 权限："module:management"
+  2. 检查 title 唯一性
+  3. 更新时检查是否有关联文章/课程（影响删除决策）
+- 模块页面管理（/admin/modules/{id}/pages）：
+  1. 支持富文本/HTML 内容存储
+  2. 应用场景：模块介绍页、帮助文档等静态页面
+  3. 内容安全：XSS 过滤（HTML 类型需严格白名单标签）
+
+### 5. 文章管理业务流程
+
+#### 5.1 前台文章浏览
+- 文章列表（/articles）：
+  1. 参数处理：分页、keyword（标题/摘要模糊搜索）、module_id（筛选）、sort（排序规则）
+  2. 基础过滤：status=1（已发布）且 publish_time <= now()
+  3. 权限过滤：如文章有 role_permissions，检查当前用户角色
+     - 无登录 → 只返回公开文章
+     - 有登录 → 返回公开 + 用户角色匹配的文章
+  4. 查询 users 表获取作者信息
+  5. 如已登录，联查 likes/collections 表标记 is_liked 等
+  6. 返回列表（不含 content 全文，减轻传输）
+- 文章详情（/articles/{id}）：
+  1. 查询文章，检查存在性和状态
+  2. 权限校验（同列表逻辑）
+  3. 异步/延迟：view_count +1（避免阻塞，可用 Redis 累加）
+  4. 如已登录，查询 like/collection 状态
+  5. 返回完整内容（含 permissions 配置）
+
+#### 5.2 管理端文章管理（/admin/articles）
+- 创建文章：
+  1. 权限校验："article:create"
+  2. 参数校验：
+     - title：必填，长度 1-200，敏感词检测
+     - content：必填，XSS 过滤（根据 content_type）
+     - cover_image：URL 格式校验
+     - status：0草稿/1立即发布/2定时发布
+     - publish_time：status=2 时必填且必须未来时间
+  3. 处理 role_permissions：空数组 → 公开文章；指定角色 → 插入 article_permissions 表
+  4. 插入 articles 表，获取 id
+  5. 如 status=1，记录发布日志
+  6. 返回 201 + Location: /articles/{id}
+- 发布/取消发布（/admin/articles/{id}/publish）：
+  1. 权限："article:publish"
+  2. 检查文章存在性
+  3. status=1（发布）：检查 content 非空、设置 publish_time=now
+  4. status=0（草稿）：直接更新状态
+  5. 发送通知：如文章从草稿变为发布，通知收藏该模块的用户（可选）
+- 【定时发布实现方案】：
+  - 方案A：定时任务（每分钟扫描 status=2 and publish_time<=now）
+  - 方案B：延迟队列（Redis ZSET / RabbitMQ 延迟消息）
+  - 建议：简单实现用方案A，大规模用方案B
+
+### 6. 课程管理业务流程
+
+#### 6.1 课程结构与购买逻辑
+- 课程单元管理（/admin/courses/{id}/units）：
+  1. 单元是课程的子资源，一个课程含多个单元（视频课）
+  2. 创建单元：上传视频 → 获取 duration（ffmpeg 解析或前端传）
+  3. 课程总时长 = SUM(units.duration)
+  4. 单元排序：sort_order 字段，支持拖拽排序
+  5. 删除单元：同步更新 courses.duration
+- 课程学习权限检查（/courses/{id}）：
+  1. 检查课程状态（已发布）
+  2. 检查价格：
+     - price=0 → 允许访问
+     - price>0 → 检查用户是否已购买（orders 表查询）
+       - 已购买 → 返回完整信息 + units
+       - 未购买 → 返回基础信息 + 第一个单元预览
+  3. 如已购买，查询 study_records 返回学习进度
+
+### 7. 互动功能业务流程
+
+#### 7.1 学习记录（/study-records）
+1. 前端定时上报（如每30秒）：当前观看 unit_id + progress(秒)
+2. 后端：INSERT INTO study_records ... ON DUPLICATE KEY UPDATE progress=VALUES(progress), status=..., last_study_at=NOW()
+3. 状态计算：
+   - progress < duration-10 → status=1（学习中）
+   - progress >= duration-10 → status=2（已完成）
+4. 课程学习人数统计：COUNT(DISTINCT user_id WHERE status>=1)
+5. 【防刷】：progress 增长幅度合理性校验（如单次不超过60秒）
+
+#### 7.2 收藏/点赞（/collections/{type}/{id}, /likes/{type}/{id}）
+- 收藏流程：
+  1. 幂等性检查：SELECT * FROM collections WHERE user_id=? AND content_type=? AND content_id=?
+     - 存在 → 返回 409 Conflict（已收藏）
+     - 不存在 → 继续
+  2. 检查内容存在性（articles/courses 表）
+  3. INSERT collections
+  4. 异步：UPDATE articles/courses SET collect_count=collect_count+1
+  5. 返回 201
+- 点赞流程（类似收藏，但支持取消后重新点赞）：
+  - 取消点赞：DELETE likes 记录，like_count-1
+  - 重新点赞：INSERT 新记录（允许重复操作，不报错）
+
+#### 7.3 评论系统（/comments/{type}/{id}, /admin/comments）
+- 发表评论：
+  1. 内容校验：长度 1-1000、敏感词过滤、防SQL注入
+  2. 检查 parent_id：如不为0，检查父评论是否存在且属于同一内容
+  3. 插入 comments（status=0 待审核 / 1 通过）
+     【审核策略】：
+     - 用户等级高/历史记录好 → 自动通过（status=1）
+     - 含敏感词/新用户 → 待审核（status=0）
+  4. 如审核通过，通知被回复用户（如 parent_id≠0）
+- 评论审核（/admin/comments/{id}/audit）：
+  1. 权限："comment:audit"
+  2. status=1（通过）：更新状态，发送通知给评论者
+  3. status=2（拒绝）：更新状态，可选发送拒绝原因
+  4. 前端展示：只查询 status=1 的评论
+
+### 8. 消息通知业务流程（/notifications）
+
+#### 8.1 通知生成与拉取
+- 通知触发场景：
+  1. 系统通知：管理员后台群发 → 写入所有用户 notifications
+  2. 评论回复：用户A回复用户B → 给B写入 type=2 通知
+  3. 学习提醒：定时任务扫描 study_records WHERE last_study_at < DATE_SUB(NOW(), INTERVAL 3 DAY) → 发送学习提醒通知
+- 通知列表：
+  1. 查询当前用户通知，支持 is_read 筛选
+  2. 返回 unread_count（未读总数，用于小红点）
+  3. 标记已读：可单条（PUT /{id}/read）或全部（PUT /read-all）
+  4. 【性能优化】：未读数可缓存到 Redis，变更时更新
+
+### 9. 系统管理业务流程
+
+#### 9.1 微信配置管理（/admin/wechat-config）
+1. 权限："wechat:config"（仅系统管理员）
+2. 存储字段：app_id, app_secret（加密存储）, api_token
+3. 自动刷新机制：
+   - access_token：缓存7200秒，过期前自动刷新
+   - jsapi_ticket：缓存7200秒，用于前端 SDK 签名
+4. 安全：app_secret 返回时脱敏（只显示后4位）
+5. 变更后：清除 Redis 中的 token 缓存，强制重新获取
+
+#### 9.2 审计日志（/admin/audit-logs）
+- 自动记录场景（AOP/中间件实现）：
+  - 管理员登录/登出
+  - 内容创建/修改/删除（记录变更前后数据）
+  - 用户冻结/角色变更
+  - 配置修改
+- 日志清理：
+  - 定时任务：每天删除 retention_days 之前的日志
+  - 或归档到冷存储（OSS/S3）后删除
+
+### 10. 文件上传业务流程（/upload/image, /upload/video）
+
+#### 10.1 图片上传
+1. 验证：文件大小（<5MB）、MIME类型（image/*）、文件头魔数（防伪装）
+2. 根据 type 参数决定存储路径：
+   - avatar：用户头像（压缩至 200x200）
+   - article/course：内容图片（压缩至最大宽度1200）
+   - cover：封面图（压缩至 750x400）
+3. 生成文件名：{type}/{date}/{uuid}.{ext}
+4. 上传至对象存储（OSS/COS/S3）
+5. 返回访问 URL 和存储 Key
+
+#### 10.2 视频上传
+- 【大文件处理方案】：
+  - 方案A（当前）：后端接收 → 转存对象存储（适合小文件）
+  - 方案B（推荐）：后端生成预签名 URL → 前端直传对象存储
+- 方案B流程：
+  1. 前端请求预签名 URL（/upload/presign?filename=xxx.mp4）
+  2. 后端生成带过期时间的 PUT URL（如15分钟）
+  3. 前端直传对象存储
+  4. 前端通知后端上传完成，后端获取 duration 和封面
+
+### 关键工程实现建议
+
+| 模块 | 关键技术点 |
+|------|-----------|
+| **认证** | JWT（access_token）+ 刷新（refresh_token）+ 注销|
+| **权限** | RBAC 数据模型 + 中间件权限校验 + 缓存 |
+| **文件存储** | 对象存储（OSS）+ CDN 加速 |
+| **安全** | SQL注入防护、XSS过滤、限流（ratelimit） |
