@@ -32,7 +32,11 @@ project/
 │   └── pkg/                    # 内部工具包
 │       ├── errors/             # 统一错误处理（新增）
 │       └── response/           # 响应封装
-├── api/swagger.yaml            # OpenAPI 2.0 规范（唯一真相源）
+├── api/
+│   ├── docs/swagger.yaml       # OpenAPI 2.0 规范（唯一真相源）
+│   └── gen/                    # OpenAPI 生成的代码文件
+├── docs/
+│   └── agent-instruction.md    # 本文件
 ├── migrations/                 # SQL 迁移文件（直接放这里）
 │   ├── 000001_init_schema.up.sql
 │   ├── 000001_init_schema.down.sql
@@ -698,7 +702,7 @@ task migrate-local        # 本地执行迁移（使用 migrate CLI）
 
 ## API 开发流程（必须遵循）
 
-1. 先写 OpenAPI：在 api/swagger.yaml 定义接口
+1. 先写 OpenAPI：在 api/docs/swagger.yaml 定义接口
 2. 生成/更新文档：task generate-swagger
 3. 生成 DTO：根据 swagger 定义创建 dto 结构体，实现 Validate()
 4. 实现 Repository：先写接口，再实现
@@ -805,7 +809,7 @@ task docker-compose-down  # 停止环境
 ## 示例指令（给 Agent 的 Prompt 模板）
 
 帮我实现用户模块：
-1. 在 api/swagger.yaml 添加 /users 的 CRUD 接口定义
+1. 在 api/docs/swagger.yaml 添加 /users 的 CRUD 接口定义
 2. 生成对应的 DTO 结构体（实现 ozzo-validation 的 Validate 方法）
 3. 创建 UserRepository 接口和实现（Gorm）
 4. 创建 UserService 接口和实现，使用 errors.NewInternal/NewNotFound 包装错误
