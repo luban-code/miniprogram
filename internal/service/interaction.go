@@ -143,12 +143,16 @@ func (s *commentService) List(ctx context.Context, contentType int8, contentID u
 }
 
 func (s *commentService) Create(ctx context.Context, userID uint64, contentType int8, contentID uint64, req *dto.CreateCommentRequest) (*entity.Comment, error) {
+	if hasHTMLTag(req.Content) {
+		return nil, errors.NewValidation("评论内容不允许包含HTML标签", nil)
+	}
+	maskedContent, _ := maskSensitiveText(req.Content)
 	c := &entity.Comment{
 		UserID:      userID,
 		ContentType: contentType,
 		ContentID:   contentID,
 		ParentID:    req.ParentID,
-		Content:     req.Content,
+		Content:     maskedContent,
 		Status:      1,
 	}
 	if err := s.commentRepo.Create(ctx, c); err != nil {
