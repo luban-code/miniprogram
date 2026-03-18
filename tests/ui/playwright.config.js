@@ -18,13 +18,14 @@ module.exports = defineConfig({
   workers: 1,
   reporter: [
     ['list'],
+    ['allure-playwright', { outputFolder: 'allure-results' }],
     ['html', { open: 'never', outputFolder: 'html-report' }],
   ],
   use: {
     baseURL: process.env.UI_BASE_URL || 'http://localhost:8081',
     screenshot: 'on',
     trace: 'retain-on-failure',
-    video: 'retain-on-failure',
+    video: 'on',
     actionTimeout: 10_000,
     navigationTimeout: 30_000,
   },

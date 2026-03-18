@@ -32,6 +32,42 @@ async function getUserToken(request) {
   return body.data?.access_token ?? '';
 }
 
+async function attachJSON(testInfo, name, payload) {
+  await testInfo.attach(name, {
+    body: Buffer.from(JSON.stringify(payload, null, 2), 'utf-8'),
+    contentType: 'application/json',
+  });
+}
+
+async function ensureModuleIDForArticle(request, adminToken) {
+  const headers = { Authorization: `Bearer ${adminToken}` };
+  const listRes = await request.get(`${APP_BASE_URL}/v1/admin/modules?page=1&page_size=20`, { headers });
+  if (listRes.ok()) {
+    const listBody = await listRes.json();
+    const modules = listBody.data?.list ?? listBody.data ?? [];
+    if (Array.isArray(modules)) {
+      const existing = modules.find((item) => Number(item?.id) > 0);
+      if (existing) {
+        return Number(existing.id);
+      }
+    }
+  }
+
+  const createRes = await request.post(`${APP_BASE_URL}/v1/admin/modules`, {
+    headers,
+    data: {
+      title: `UI Report Module ${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+      description: 'ui-report-module',
+      sort_order: 0,
+    },
+  });
+  expect(createRes.ok()).toBeTruthy();
+  const createBody = await createRes.json();
+  const moduleID = createBody.data?.id ?? 0;
+  expect(moduleID).toBeGreaterThan(0);
+  return moduleID;
+}
+
 /* ═══════════════════════════════════════════════════════════════════ */
 /*  ADMIN PORTAL TESTS                                                */
 /* ═══════════════════════════════════════════════════════════════════ */
@@ -102,6 +138,12 @@ test.describe('Admin Portal', () => {
       await expect(page.getByRole('button', { name: /新增/ })).toBeVisible();
     });
 
+    test('navigate to attribute management', async ({ page }) => {
+      await page.getByText('属性管理').click();
+      await expect(page.locator('h3, .page-title').first()).toContainText(/属性管理/);
+      await expect(page.getByRole('button', { name: /新增属性/ })).toBeVisible();
+    });
+
     test('navigate to article management', async ({ page }) => {
       await page.getByText('文章管理').click();
       await expect(page.locator('h3, .page-title').first()).toContainText(/文章管理/);
@@ -117,6 +159,74 @@ test.describe('Admin Portal', () => {
       await expect(page.getByText('内容').first()).toBeVisible();
     });
 
+    test('report includes created content, created content list, and uploaded file', async ({ page, request }, testInfo) => {
+      const adminToken = await getAdminToken(request);
+      const uniqueTitle = `UI Report Article ${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+      const moduleID = await ensureModuleIDForArticle(request, adminToken);
+
+      let articleId = 0;
+      await test.step('创建内容：创建文章', async () => {
+        const articleRes = await request.post(`${APP_BASE_URL}/v1/admin/articles`, {
+          headers: { Authorization: `Bearer ${adminToken}` },
+          data: { title: uniqueTitle, summary: 'ui-report-summary', content: 'ui-report-content', content_type: 1, module_id: moduleID },
+        });
+        expect(articleRes.ok()).toBeTruthy();
+        const articleBody = await articleRes.json();
+        articleId = articleBody.data?.id ?? 0;
+        expect(articleId).toBeGreaterThan(0);
+        await attachJSON(testInfo, 'created-content.json', articleBody);
+      });
+
+      await test.step('创建后的内容列表：接口与页面可见', async () => {
+        const listRes = await request.get(
+          `${APP_BASE_URL}/v1/admin/articles?page=1&page_size=20&keyword=${encodeURIComponent(uniqueTitle)}`,
+          { headers: { Authorization: `Bearer ${adminToken}` } },
+        );
+        expect(listRes.ok()).toBeTruthy();
+        const listBody = await listRes.json();
+        const list = listBody.data?.list ?? [];
+        expect(Array.isArray(list)).toBeTruthy();
+        expect(list.some((item) => item.id === articleId || item.title === uniqueTitle)).toBeTruthy();
+        await attachJSON(testInfo, 'created-content-list.json', listBody);
+
+        await page.getByText('文章管理').click();
+        await expect(page.locator('h3, .page-title').first()).toContainText(/文章管理/);
+        await page.locator('.search-input').first().fill(uniqueTitle);
+        await page.keyboard.press('Enter');
+        await expect(page.getByText(uniqueTitle).first()).toBeVisible({ timeout: 15000 });
+      });
+
+      await test.step('上传成功的文件：预签名上传并验证文件ID', async () => {
+        const filename = `ui-report-${Date.now()}.png`;
+        const presignRes = await request.get(
+          `${APP_BASE_URL}/v1/admin/upload/files/presign?filename=${encodeURIComponent(filename)}&usage=embedded&expires_in=600`,
+          { headers: { Authorization: `Bearer ${adminToken}` } },
+        );
+        expect(presignRes.ok()).toBeTruthy();
+        const presignBody = await presignRes.json();
+        const fileID = presignBody.data?.file_id ?? 0;
+        const putURL = presignBody.data?.put_url ?? '';
+        expect(fileID).toBeGreaterThan(0);
+        expect(typeof putURL).toBe('string');
+        expect(putURL.length).toBeGreaterThan(0);
+
+        const uploadRes = await request.fetch(putURL, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'image/png' },
+          data: Buffer.from('ui-report-upload-png'),
+        });
+        expect(uploadRes.ok()).toBeTruthy();
+        const uploadBody = await uploadRes.text();
+        await attachJSON(testInfo, 'uploaded-file.json', {
+          file_id: fileID,
+          key: presignBody.data?.key,
+          static_url: presignBody.data?.static_url ?? '',
+          upload_status: uploadRes.status(),
+          upload_response: uploadBody,
+        });
+      });
+    });
+
     test('navigate to course management', async ({ page }) => {
       await page.getByText('课程管理').click();
       await expect(page.locator('h3, .page-title').first()).toContainText(/课程管理/);
@@ -126,6 +236,12 @@ test.describe('Admin Portal', () => {
     test('navigate to module management', async ({ page }) => {
       await page.getByText('模块管理').click();
       await expect(page.locator('h3, .page-title').first()).toContainText(/模块管理/);
+    });
+
+    test('navigate to banner management', async ({ page }) => {
+      await page.getByText('轮播图管理').click();
+      await expect(page.locator('h3, .page-title').first()).toContainText(/轮播图管理/);
+      await expect(page.getByRole('button', { name: /新增轮播图/ })).toBeVisible();
     });
 
     test('navigate to comment management', async ({ page }) => {
