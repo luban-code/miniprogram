@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS `user_tags` (
 CREATE TABLE IF NOT EXISTS `attributes` (
     `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     `name` VARCHAR(64) NOT NULL COMMENT '属性名称',
+    `type` TINYINT DEFAULT 1 COMMENT '1字符串 2BigInt',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE INDEX `idx_name` (`name`)
@@ -151,7 +152,8 @@ CREATE TABLE IF NOT EXISTS `user_attributes` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     `user_id` BIGINT UNSIGNED NOT NULL COMMENT '用户ID',
     `attribute_id` INT UNSIGNED NOT NULL COMMENT '属性ID',
-    `value` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '属性值',
+    `value_string` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '字符串属性值',
+    `value_bigint` BIGINT COMMENT 'BigInt属性值',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
@@ -159,6 +161,17 @@ CREATE TABLE IF NOT EXISTS `user_attributes` (
     UNIQUE INDEX `idx_user_attribute` (`user_id`, `attribute_id`),
     INDEX `idx_attribute` (`attribute_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户属性表';
+
+-- 预置系统属性
+INSERT INTO `attributes` (`name`, `type`) VALUES
+    ('avatar_file_id', 2),
+    ('view_count', 2),
+    ('like_count', 2),
+    ('collect_count', 2),
+    ('comment_count', 2),
+    ('share_count', 2),
+    ('study_count', 2)
+ON DUPLICATE KEY UPDATE `type` = VALUES(`type`);
 
 -- ============================================
 -- 3. 内容管理模块
@@ -213,6 +226,7 @@ CREATE TABLE IF NOT EXISTS `articles` (
     `content` LONGTEXT,
     `content_type` TINYINT DEFAULT 1 COMMENT '1富文本 2HTML 3Markdown',
     `cover_image` VARCHAR(255),
+    `cover_file_id` BIGINT UNSIGNED,
     `author_id` BIGINT UNSIGNED,
     `module_id` INT UNSIGNED,
     `status` TINYINT DEFAULT 0 COMMENT '0草稿 1已发布 2定时发布',
@@ -254,6 +268,7 @@ CREATE TABLE IF NOT EXISTS `courses` (
     `title` VARCHAR(200) NOT NULL,
     `description` TEXT,
     `cover_image` VARCHAR(255),
+    `cover_file_id` BIGINT UNSIGNED,
     `duration` INT UNSIGNED COMMENT '总课时(分钟)',
     `author_id` BIGINT UNSIGNED,
     `module_id` INT UNSIGNED,
@@ -295,6 +310,7 @@ CREATE TABLE IF NOT EXISTS `article_attachments` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     `article_id` BIGINT UNSIGNED NOT NULL,
     `file_id` BIGINT UNSIGNED NOT NULL,
+    `permission_id` INT UNSIGNED COMMENT '附件权限配置ID',
     `sort_order` INT DEFAULT 0,
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (`article_id`) REFERENCES `articles`(`id`) ON DELETE CASCADE,
@@ -308,6 +324,7 @@ CREATE TABLE IF NOT EXISTS `course_attachments` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     `course_id` BIGINT UNSIGNED NOT NULL,
     `file_id` BIGINT UNSIGNED NOT NULL,
+    `permission_id` INT UNSIGNED COMMENT '附件权限配置ID',
     `sort_order` INT DEFAULT 0,
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (`course_id`) REFERENCES `courses`(`id`) ON DELETE CASCADE,
@@ -315,6 +332,50 @@ CREATE TABLE IF NOT EXISTS `course_attachments` (
     UNIQUE KEY `uk_course_file` (`course_id`, `file_id`),
     INDEX `idx_course_sort` (`course_id`, `sort_order`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='课程附件关联表';
+
+-- 课程单元附件表
+CREATE TABLE IF NOT EXISTS `course_unit_attachments` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `unit_id` BIGINT UNSIGNED NOT NULL,
+    `file_id` BIGINT UNSIGNED NOT NULL,
+    `permission_id` INT UNSIGNED COMMENT '附件权限配置ID',
+    `sort_order` INT DEFAULT 0,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (`unit_id`) REFERENCES `course_units`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`file_id`) REFERENCES `files`(`id`) ON DELETE CASCADE,
+    UNIQUE KEY `uk_unit_file` (`unit_id`, `file_id`),
+    INDEX `idx_unit_sort` (`unit_id`, `sort_order`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='课程单元附件关联表';
+
+-- 文章属性表
+CREATE TABLE IF NOT EXISTS `article_attributes` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `article_id` BIGINT UNSIGNED NOT NULL COMMENT '文章ID',
+    `attribute_id` INT UNSIGNED NOT NULL COMMENT '属性ID',
+    `value_string` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '字符串属性值',
+    `value_bigint` BIGINT COMMENT 'BigInt属性值',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (`article_id`) REFERENCES `articles`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`attribute_id`) REFERENCES `attributes`(`id`) ON DELETE CASCADE,
+    UNIQUE INDEX `idx_article_attribute` (`article_id`, `attribute_id`),
+    INDEX `idx_article_attr_attribute` (`attribute_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文章属性表';
+
+-- 课程属性表
+CREATE TABLE IF NOT EXISTS `course_attributes` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `course_id` BIGINT UNSIGNED NOT NULL COMMENT '课程ID',
+    `attribute_id` INT UNSIGNED NOT NULL COMMENT '属性ID',
+    `value_string` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '字符串属性值',
+    `value_bigint` BIGINT COMMENT 'BigInt属性值',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (`course_id`) REFERENCES `courses`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`attribute_id`) REFERENCES `attributes`(`id`) ON DELETE CASCADE,
+    UNIQUE INDEX `idx_course_attribute` (`course_id`, `attribute_id`),
+    INDEX `idx_course_attr_attribute` (`attribute_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='课程属性表';
 
 -- 内容权限关联表（查看权限控制）
 CREATE TABLE IF NOT EXISTS `content_permissions` (
