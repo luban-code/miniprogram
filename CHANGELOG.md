@@ -1,6 +1,12 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## [Unreleased] - 2026-03-20
+
+### Added
+- **CODEOWNERS 配置** - 新增 CODEOWNERS 文件，设置 luoxiaojun1992 为全局代码负责人
+
+### Changed
+- **API 文档与 k6 场景注释** - 补齐 API 文档中的应用示例，并对 k6 性能测试场景注释进行分层重构
 
 ## [Unreleased] - 2026-03-19
 
